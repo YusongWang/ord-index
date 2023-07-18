@@ -131,7 +131,7 @@ impl Updater {
 
       uncommitted += 1;
 
-      if uncommitted == 5000 {
+      if uncommitted == 10 {
         self.commit(wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
@@ -297,6 +297,7 @@ impl Updater {
             };
             outpoints.push(outpoint);
           }
+          //println!("Fetching {} inputs", outpoints.len());
           // Break outpoints into chunks for parallel requests
           let chunk_size = (outpoints.len() / PARALLEL_REQUESTS) + 1;
           let mut futs = Vec::with_capacity(PARALLEL_REQUESTS);
