@@ -94,33 +94,33 @@ pub(crate) struct Server {
     default_value = "0.0.0.0",
     help = "Listen on <ADDRESS> for incoming requests."
   )]
-  address: String,
+  pub address: String,
   #[clap(
     long,
     help = "Request ACME TLS certificate for <ACME_DOMAIN>. This ord instance must be reachable at <ACME_DOMAIN>:443 to respond to Let's Encrypt ACME challenges."
   )]
-  acme_domain: Vec<String>,
+  pub acme_domain: Vec<String>,
   #[clap(
     long,
     help = "Listen on <HTTP_PORT> for incoming HTTP requests. [default: 80]."
   )]
-  http_port: Option<u16>,
+  pub http_port: Option<u16>,
   #[clap(
     long,
     group = "port",
     help = "Listen on <HTTPS_PORT> for incoming HTTPS requests. [default: 443]."
   )]
-  https_port: Option<u16>,
+  pub https_port: Option<u16>,
   #[clap(long, help = "Store ACME TLS certificates in <ACME_CACHE>.")]
-  acme_cache: Option<PathBuf>,
+  pub acme_cache: Option<PathBuf>,
   #[clap(long, help = "Provide ACME contact <ACME_CONTACT>.")]
-  acme_contact: Vec<String>,
+  pub acme_contact: Vec<String>,
   #[clap(long, help = "Serve HTTP traffic on <HTTP_PORT>.")]
-  http: bool,
+  pub http: bool,
   #[clap(long, help = "Serve HTTPS traffic on <HTTPS_PORT>.")]
-  https: bool,
+  pub https: bool,
   #[clap(long, help = "Redirect HTTP traffic to HTTPS.")]
-  redirect_http_to_https: bool,
+  pub redirect_http_to_https: bool,
 }
 
 impl Server {

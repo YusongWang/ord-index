@@ -12,6 +12,7 @@ pub mod subsidy;
 pub mod supply;
 pub mod traits;
 pub mod wallet;
+mod vermilion;
 
 fn print_json(output: impl Serialize) -> Result {
   serde_json::to_writer_pretty(io::stdout(), &output)?;
@@ -45,6 +46,8 @@ pub(crate) enum Subcommand {
   Traits(traits::Traits),
   #[clap(subcommand, about = "Wallet commands")]
   Wallet(wallet::Wallet),
+  #[clap(about = "Run the vermilion server")]
+  Vermilion(vermilion::Vermilion),
 }
 
 impl Subcommand {
@@ -67,6 +70,12 @@ impl Subcommand {
       Self::Supply => supply::run(),
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
+      Self::Vermilion(vermilion) => {
+        let index = Arc::new(Index::open(&options)?);
+        let handle = axum_server::Handle::new();
+        LISTENERS.lock().unwrap().push(handle.clone());
+        vermilion.run(options, index, handle)
+      }
     }
   }
 }
