@@ -70,11 +70,12 @@ impl Subcommand {
       Self::Supply => supply::run(),
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
-      Self::Vermilion(vermilion) => {
+      Self::Vermilion(vermilion) => {        
+        vermilion.clone().run_vermilion_server(options.clone());
         let index = Arc::new(Index::open(&options)?);
         let handle = axum_server::Handle::new();
         LISTENERS.lock().unwrap().push(handle.clone());
-        vermilion.run(options, index, handle)
+        vermilion.clone().run(options.clone(), index, handle)
       }
     }
   }

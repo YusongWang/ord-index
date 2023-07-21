@@ -29,7 +29,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
   #[clap(
     long,
@@ -105,6 +105,7 @@ pub struct ApiServerConfig {
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> Result {
+    println!("Vermilion Indexer Running");
     //1. Normal Server
     let server = server::Server {
       address: self.address,
@@ -131,46 +132,13 @@ impl Vermilion {
       }
     });
 
-    //2. Vermilion Server
-    let api_server_options_clone = options.clone();
-    let verm_server_thread = thread::spawn(move ||{
-      let mut rt = Runtime::new().unwrap();
-      rt.block_on(async move {
-        let s3_config = aws_config::from_env().region("us-east-1").load().await;
-        let s3client = s3::Client::new(&s3_config);
-        let config = api_server_options_clone.load_config().unwrap();
-        let url = config.db_connection_string.unwrap();
-        let pool = MySqlPoolOptions::new()
-          .max_connections(5)
-          .connect(url.as_str()).await.unwrap();
-        let server_config = ApiServerConfig {
-          pool: pool,
-          s3client: s3client
-        };
-
-        let app = Router::new()
-          .route("/", get(Self::root))
-          .route("/home", get(Self::home))
-          .route("/inscription/:inscription_id", get(Self::inscription))
-          .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))        
-          .with_state(server_config);
-
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
-        //tracing::debug!("listening on {}", addr);
-        axum::Server::bind(&addr)
-            .serve(app.into_make_service())
-            .await
-            .unwrap();
-      });
-    });
-
-    //3. Vermilion Indexer
+    //2. Vermilion Indexer
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {      
-      println!("Vermilion Running");
+      println!("Vermilion Indexer Running");
       let clone = index.clone();
       let s3_config = aws_config::from_env().region("us-east-1").load().await;
       let s3client = s3::Client::new(&s3_config);
@@ -192,6 +160,10 @@ impl Vermilion {
       let time = Instant::now();
       print!("Starting @ {:?}", time);
       loop {
+        //break if ctrl-c is received
+        if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+          break;
+        }
         let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = clone.clone();        
         let cloned_s3client = s3client.clone();
@@ -301,6 +273,43 @@ impl Vermilion {
     })
   }
 
+  pub(crate) fn run_vermilion_server(self, options: Options) {
+    println!("Vermilion Server Running");
+    let api_server_options_clone = options.clone();
+    let verm_server_thread = thread::spawn(move ||{
+      let mut rt = Runtime::new().unwrap();
+      rt.block_on(async move {
+        let s3_config = aws_config::from_env().region("us-east-1").load().await;
+        let s3client = s3::Client::new(&s3_config);
+        let config = api_server_options_clone.load_config().unwrap();
+        let url = config.db_connection_string.unwrap();
+        let pool = MySqlPoolOptions::new()
+          .max_connections(5)
+          .connect(url.as_str()).await.unwrap();
+        let server_config = ApiServerConfig {
+          pool: pool,
+          s3client: s3client
+        };
+
+        let app = Router::new()
+          .route("/", get(Self::root))
+          .route("/home", get(Self::home))
+          .route("/inscription/:inscription_id", get(Self::inscription))
+          .route("/inscription_number/:number", get(Self::inscription_number))
+          .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
+          .route("/inscription_number_metadata/:number", get(Self::inscription_number_metadata))   
+          .with_state(server_config);
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
+        //tracing::debug!("listening on {}", addr);
+        axum::Server::bind(&addr)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+      });
+    });
+  }
+
   //Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, inscription_id: InscriptionId, inscription: Inscription) {
     let bucket_name = "vermilion-ordinals";
@@ -404,7 +413,7 @@ impl Vermilion {
     let mut conn = pool.get_conn()?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
-          id text not null,
+          id varchar(80) not null primary key,
           address text,
           content_length bigint,
           content_type text,
@@ -416,7 +425,9 @@ impl Vermilion {
           offset bigint,
           output_transaction text,
           sat bigint,
-          timestamp bigint
+          timestamp bigint,
+          INDEX index_id (id),
+          INDEX index_number (number)
       )")?;
     Ok(())
   }
@@ -557,22 +568,28 @@ impl Vermilion {
     "Hello, World!"
   }
 
-  async fn home() -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content("6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+  async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let response = Self::get_ordinal_content(server_config.s3client, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
-    let content_type2 = content_type.clone();
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
-        // axum::response::AppendHeaders([
-        //     (axum::http::header::CONTENT_TYPE, content_type2),
-        // ]),
         bytes,
     )
   }
 
-  async fn inscription(Path(inscription_id): Path<InscriptionId>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(inscription_id.to_string()).await;
+  async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let response = Self::get_ordinal_content(server_config.s3client, inscription_id.to_string()).await;
+    let bytes = response.body.collect().await.unwrap().to_vec();
+    let content_type = response.content_type.unwrap();
+    (
+        ([(axum::http::header::CONTENT_TYPE, content_type)]),
+        bytes,
+    )
+  }
+
+  async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let response = Self::get_ordinal_content_by_number(server_config.pool, server_config.s3client, number).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
@@ -589,27 +606,71 @@ impl Vermilion {
     )
   }
 
-  async fn get_ordinal_content(inscription_id: String) -> GetObjectOutput {
-    let config = aws_config::from_env().region("us-east-1").load().await;
-    let client = s3::Client::new(&config);
+  async fn inscription_number_metadata(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let metadata = Self::get_ordinal_metadata_from_db_by_number(server_config.pool, number).await;
+    (
+        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+        Json(metadata),
+    )
+  }
+
+  async fn get_ordinal_content(client: s3::Client, inscription_id: String) -> GetObjectOutput {
     let bucket_name = "vermilion-ordinals";
     let key = format!("content/{}", inscription_id);
 
     let content = client
       .get_object()
       .bucket(bucket_name)
-      .key(inscription_id)
+      .key(key)
       .send()
       .await
       .unwrap();
-    
-    println!("Content: {:?}", content);
+    content
+  }
+
+  async fn get_ordinal_content_by_number(pool: sqlx::Pool<sqlx::MySql>, client: s3::Client, number: i64) -> GetObjectOutput {
+    let inscription_id = sqlx::query("SELECT id FROM ordinals WHERE number=?")
+      .bind(number)
+      .map(|row: sqlx::mysql::MySqlRow| row.get::<String, &str>("id"))
+      .fetch_one(&pool).await.unwrap();
+    let bucket_name = "vermilion-ordinals";
+    let key = format!("content/{}", inscription_id);
+
+    let content = client
+      .get_object()
+      .bucket(bucket_name)
+      .key(key)
+      .send()
+      .await
+      .unwrap();
     content
   }
 
   async fn get_ordinal_metadata_from_db(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Metadata {
     let mut row = sqlx::query("SELECT * FROM ordinals WHERE id=?")
       .bind(inscription_id)
+      .map(|row| Metadata {
+          id: row.get("id"),
+          address: row.get("address"),
+          content_length: row.get("content_length"),
+          content_type: row.get("content_type"), 
+          genesis_fee: row.get("genesis_fee"),
+          genesis_height: row.get("genesis_height"),
+          genesis_transaction: row.get("genesis_transaction"),
+          location: row.get("location"),
+          number: row.get("number"),
+          offset: row.get("offset"),
+          output_transaction: row.get("output_transaction"),
+          sat: row.get("sat"),
+          timestamp: row.get("timestamp")
+      })
+      .fetch_one(&pool).await.unwrap();
+    row    
+  }
+
+  async fn get_ordinal_metadata_from_db_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Metadata {
+    let mut row: Metadata = sqlx::query("SELECT * FROM ordinals WHERE number=?")
+      .bind(number)
       .map(|row| Metadata {
           id: row.get("id"),
           address: row.get("address"),
