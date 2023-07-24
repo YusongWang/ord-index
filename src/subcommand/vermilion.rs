@@ -18,6 +18,7 @@ use sqlx::Row;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use serde::Serialize;
+use sha256::digest;
 
 use axum::{
   routing::get,
@@ -89,7 +90,8 @@ pub struct Metadata {
   offset: i64,
   output_transaction: String,
   sat: Option<i64>,
-  timestamp: i64
+  timestamp: i64,
+  sha256: String
 }
 
 pub struct InscriptionNumberStatus {
@@ -391,6 +393,15 @@ impl Vermilion {
         None
       }
     };
+    let sha256 = match inscription.body() {
+      Some(body) => {
+        let hash = digest(body);
+        hash
+      },
+      None => {
+        "".to_string()
+      }
+    };
     let metadata = Metadata {
       id: inscription_id.to_string(),
       address: address,
@@ -405,6 +416,7 @@ impl Vermilion {
       output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
       timestamp: entry.timestamp.try_into().unwrap(),
+      sha256: sha256
     };
     Ok(metadata)
   }
@@ -426,8 +438,10 @@ impl Vermilion {
           output_transaction text,
           sat bigint,
           timestamp bigint,
+          sha256 text,
           INDEX index_id (id),
-          INDEX index_number (number)
+          INDEX index_number (number),
+          INDEX index_block (genesis_height)
       )")?;
     Ok(())
   }
@@ -435,8 +449,8 @@ impl Vermilion {
   pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn()?;
     let exec = conn.exec_iter(
-      r"INSERT INTO ordinals (id, address, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp)
-        VALUES (:id, :address, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp)",
+      r"INSERT INTO ordinals (id, address, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256)
+        VALUES (:id, :address, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256)",
       params! { "id" => metadata.id,
                 "address" => metadata.address,
                 "content_length" => metadata.content_length,
@@ -449,7 +463,8 @@ impl Vermilion {
                 "offset" => metadata.offset,
                 "output_transaction" => metadata.output_transaction,
                 "sat" => metadata.sat,
-                "timestamp" => metadata.timestamp
+                "timestamp" => metadata.timestamp,
+                "sha256" => metadata.sha256
       }
     );
     match exec {
@@ -662,7 +677,8 @@ impl Vermilion {
           offset: row.get("offset"),
           output_transaction: row.get("output_transaction"),
           sat: row.get("sat"),
-          timestamp: row.get("timestamp")
+          timestamp: row.get("timestamp"),
+          sha256: row.get("sha256")
       })
       .fetch_one(&pool).await.unwrap();
     row    
@@ -684,7 +700,8 @@ impl Vermilion {
           offset: row.get("offset"),
           output_transaction: row.get("output_transaction"),
           sat: row.get("sat"),
-          timestamp: row.get("timestamp")
+          timestamp: row.get("timestamp"),
+          sha256: row.get("sha256")
       })
       .fetch_one(&pool).await.unwrap();
     row    
