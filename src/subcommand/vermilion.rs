@@ -1,15 +1,10 @@
 use super::*;
 use axum_server::Handle;
 use http::status;
-use s3::operation::get_object::GetObjectOutput;
 use crate::subcommand::server;
 use crate::index::fetcher;
 use crate::subcommand::wallet::inscriptions;
 
-use aws_sdk_s3 as s3;
-use s3::primitives::ByteStream;
-use s3::error::{SdkError, ProvideErrorMetadata};
-use s3::operation::put_object::{PutObjectOutput, PutObjectError};
 use mysql::Pool;
 use mysql::prelude::Queryable;
 use mysql::params;
@@ -94,6 +89,12 @@ pub struct Metadata {
   sha256: String
 }
 
+#[derive(Clone, Serialize)]
+pub struct Content {
+  content: Vec<u8>,
+  content_type: Option<String>
+}
+
 pub struct InscriptionNumberStatus {
   inscription_number: i64,
   status: String
@@ -101,8 +102,7 @@ pub struct InscriptionNumberStatus {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  pool: sqlx::Pool<sqlx::MySql>,
-  s3client: s3::Client,
+  pool: sqlx::Pool<sqlx::MySql>
 }
 
 impl Vermilion {
@@ -142,8 +142,6 @@ impl Vermilion {
     rt.block_on(async {      
       println!("Vermilion Indexer Running");
       let clone = index.clone();
-      let s3_config = aws_config::from_env().region("us-east-1").load().await;
-      let s3client = s3::Client::new(&s3_config);
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str())?;
@@ -167,8 +165,7 @@ impl Vermilion {
           break;
         }
         let permit = Arc::clone(&sem).acquire_owned().await;
-        let cloned_index = clone.clone();        
-        let cloned_s3client = s3client.clone();
+        let cloned_index = clone.clone();
         let cloned_pool = pool.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_status_vector2 = status_vector.clone();
@@ -241,17 +238,12 @@ impl Vermilion {
             inscriptions.push(inscription);
           }
           
-          //3. Upload ordinal content
+          //3. Get ordinal metadata
           let id_inscriptions: Vec<_> = cloned_ids2.into_iter().zip(inscriptions.into_iter()).collect();
-          for (inscription_id, inscription) in id_inscriptions.clone() {
-            Self::upload_ordinal_content(&cloned_s3client, inscription_id, inscription).await;
-          }
-          
-          //4. Get ordinal metadata
           let mut status_vector = cloned_status_vector2.lock().await;
           for (inscription_id, inscription) in id_inscriptions.clone() {
-            let metadata: Metadata = Self::get_ordinal_metadata(cloned_index.clone(), &cloned_options, inscription_id, inscription).unwrap();
-            let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
+            let metadata: Metadata = Self::get_ordinal_metadata(cloned_index.clone(), &cloned_options, inscription_id, inscription.clone()).unwrap();
+            let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone(), inscription);
             let status = status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
             if result.is_err() {
               println!("Error inserting metadata for inscription number: {}. Marking as error", metadata.number);
@@ -263,7 +255,7 @@ impl Vermilion {
           let time = Instant::now();
           println!("Finished numbers {} - {} @ {:?}", needed_clone[0], needed_clone[needed_clone.len()-1], time);
 
-          //5. Sleep thread if up to date.
+          //4. Sleep thread if up to date.
           if should_sleep {
             println!("Sleeping for 60s");
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -281,16 +273,13 @@ impl Vermilion {
     let verm_server_thread = thread::spawn(move ||{
       let mut rt = Runtime::new().unwrap();
       rt.block_on(async move {
-        let s3_config = aws_config::from_env().region("us-east-1").load().await;
-        let s3client = s3::Client::new(&s3_config);
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = MySqlPoolOptions::new()
           .max_connections(5)
           .connect(url.as_str()).await.unwrap();
         let server_config = ApiServerConfig {
-          pool: pool,
-          s3client: s3client
+          pool: pool
         };
 
         let app = Router::new()
@@ -313,49 +302,6 @@ impl Vermilion {
   }
 
   //Helper functions
-  pub(crate) async fn upload_ordinal_content(client: &s3::Client, inscription_id: InscriptionId, inscription: Inscription) {
-    let bucket_name = "vermilion-ordinals";
-
-    let body = Inscription::body(&inscription);
-    let bytes = match body {
-      Some(body) => body.to_vec(),
-      None => {
-        println!("No body found for inscription: {}, filling with empty body", inscription_id);
-        Vec::new()
-      }
-    };
-    let content_type = match Inscription::content_type(&inscription) {
-      Some(content_type) => content_type,
-      None => {
-        println!("No content type found for inscription: {}, filling with empty content type", inscription_id);
-        ""
-      }
-    };
-    let id = inscription_id.to_string();
-    let key = format!("content/{}", id);
-    let ret_id = id.clone();
-
-    let status = client
-      .put_object()
-      .bucket(bucket_name)
-      .key(key)
-      .body(ByteStream::from(bytes))
-      .content_type(content_type)
-      .send()
-      .await;
-
-    let ret = match status {
-      Ok(status) => {
-        log::info!("Uploaded ordinal content to S3: {}", ret_id);
-        status
-      }
-      Err(error) => {
-        println!("Error uploading ordinal {} to S3: {} - {:?}", ret_id, error, error.message());
-        return;
-      }
-    };
-  }
-
   pub(crate) fn get_ordinal_metadata(index: Arc<Index>, options: &Options, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -427,6 +373,7 @@ impl Vermilion {
       r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
           address text,
+          content mediumblob,
           content_length bigint,
           content_type text,
           genesis_fee bigint,
@@ -446,13 +393,14 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata, inscription: Inscription) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn()?;
     let exec = conn.exec_iter(
-      r"INSERT INTO ordinals (id, address, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256)
-        VALUES (:id, :address, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256)",
+      r"INSERT INTO ordinals (id, address, content, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256)
+        VALUES (:id, :address, :content, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256)",
       params! { "id" => metadata.id,
                 "address" => metadata.address,
+                "content" => inscription.body(),
                 "content_length" => metadata.content_length,
                 "content_type" => metadata.content_type,
                 "genesis_fee" => metadata.genesis_fee,
@@ -584,9 +532,9 @@ impl Vermilion {
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(server_config.s3client, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content = Self::get_ordinal_content(server_config.pool, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+    let bytes = content.content;
+    let content_type = content.content_type.unwrap();
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
@@ -594,9 +542,9 @@ impl Vermilion {
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(server_config.s3client, inscription_id.to_string()).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content = Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await;
+    let bytes = content.content;
+    let content_type = content.content_type.unwrap();
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
@@ -604,9 +552,9 @@ impl Vermilion {
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content_by_number(server_config.pool, server_config.s3client, number).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content = Self::get_ordinal_content_by_number(server_config.pool, number).await;
+    let bytes = content.content;
+    let content_type = content.content_type.unwrap();
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
@@ -629,40 +577,30 @@ impl Vermilion {
     )
   }
 
-  async fn get_ordinal_content(client: s3::Client, inscription_id: String) -> GetObjectOutput {
-    let bucket_name = "vermilion-ordinals";
-    let key = format!("content/{}", inscription_id);
-
-    let content = client
-      .get_object()
-      .bucket(bucket_name)
-      .key(key)
-      .send()
-      .await
-      .unwrap();
+  async fn get_ordinal_content(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Content {
+    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE id=?")
+      .bind(inscription_id)
+      .map(|row| Content {
+          content: row.get("content"),
+          content_type: row.get("content_type")
+      })
+    .fetch_one(&pool).await.unwrap();
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: sqlx::Pool<sqlx::MySql>, client: s3::Client, number: i64) -> GetObjectOutput {
-    let inscription_id = sqlx::query("SELECT id FROM ordinals WHERE number=?")
+  async fn get_ordinal_content_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Content {
+    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE number=?")
       .bind(number)
-      .map(|row: sqlx::mysql::MySqlRow| row.get::<String, &str>("id"))
-      .fetch_one(&pool).await.unwrap();
-    let bucket_name = "vermilion-ordinals";
-    let key = format!("content/{}", inscription_id);
-
-    let content = client
-      .get_object()
-      .bucket(bucket_name)
-      .key(key)
-      .send()
-      .await
-      .unwrap();
+      .map(|row| Content {
+          content: row.get("content"),
+          content_type: row.get("content_type")
+      })
+    .fetch_one(&pool).await.unwrap();
     content
   }
 
   async fn get_ordinal_metadata_from_db(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Metadata {
-    let mut row = sqlx::query("SELECT * FROM ordinals WHERE id=?")
+    let row = sqlx::query("SELECT * FROM ordinals WHERE id=?")
       .bind(inscription_id)
       .map(|row| Metadata {
           id: row.get("id"),
@@ -685,7 +623,7 @@ impl Vermilion {
   }
 
   async fn get_ordinal_metadata_from_db_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Metadata {
-    let mut row: Metadata = sqlx::query("SELECT * FROM ordinals WHERE number=?")
+    let row: Metadata = sqlx::query("SELECT * FROM ordinals WHERE number=?")
       .bind(number)
       .map(|row| Metadata {
           id: row.get("id"),
