@@ -86,7 +86,7 @@ pub struct Metadata {
   output_transaction: String,
   sat: Option<i64>,
   timestamp: i64,
-  sha256: String
+  sha256: Option<String>
 }
 
 #[derive(Clone, Serialize)]
@@ -342,10 +342,10 @@ impl Vermilion {
     let sha256 = match inscription.body() {
       Some(body) => {
         let hash = digest(body);
-        hash
+        Some(hash)
       },
       None => {
-        "".to_string()
+        None
       }
     };
     let metadata = Metadata {
