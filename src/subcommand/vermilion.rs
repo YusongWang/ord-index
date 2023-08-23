@@ -100,6 +100,13 @@ pub struct InscriptionNumberStatus {
   status: String
 }
 
+#[derive(Clone, Serialize)]
+pub struct InscriptionNumberEdition {
+  id: String,
+  number: i64,
+  edition: u64
+}
+
 #[derive(Clone)]
 pub struct ApiServerConfig {
   pool: sqlx::Pool<sqlx::MySql>
@@ -276,7 +283,9 @@ impl Vermilion {
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = MySqlPoolOptions::new()
-          .max_connections(5)
+          .max_connections(50)
+          .idle_timeout(Some(Duration::from_secs(60)))
+          .max_lifetime(Some(Duration::from_secs(120)))
           .connect(url.as_str()).await.unwrap();
         let server_config = ApiServerConfig {
           pool: pool
@@ -288,7 +297,9 @@ impl Vermilion {
           .route("/inscription/:inscription_id", get(Self::inscription))
           .route("/inscription_number/:number", get(Self::inscription_number))
           .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
-          .route("/inscription_number_metadata/:number", get(Self::inscription_number_metadata))   
+          .route("/inscription_number_metadata/:number", get(Self::inscription_number_metadata))
+          .route("/inscription_editions/:inscription_id", get(Self::inscription_editions))
+          .route("/inscription_number_editions/:number", get(Self::inscription_number_editions))
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
@@ -385,10 +396,11 @@ impl Vermilion {
           output_transaction text,
           sat bigint,
           timestamp bigint,
-          sha256 text,
+          sha256 varchar(64),
           INDEX index_id (id),
           INDEX index_number (number),
-          INDEX index_block (genesis_height)
+          INDEX index_block (genesis_height),
+          INDEX index_sha256 (sha256)
       )")?;
     Ok(())
   }
@@ -526,7 +538,7 @@ impl Vermilion {
     needed_inscription_numbers
   }
 
-  //Server functions
+  //Server api functions
   async fn root() -> &'static str {    
     "Hello, World!"
   }
@@ -577,6 +589,23 @@ impl Vermilion {
     )
   }
 
+  async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
+    (
+        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+        Json(editions),
+    )
+  }
+
+  async fn inscription_number_editions(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
+    (
+        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+        Json(editions),
+    )
+  }
+
+  //DB functions
   async fn get_ordinal_content(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Content {
     let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE id=?")
       .bind(inscription_id)
@@ -643,6 +672,30 @@ impl Vermilion {
       })
       .fetch_one(&pool).await.unwrap();
     row    
+  }
+
+  async fn get_matching_inscriptions(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Vec<InscriptionNumberEdition> {
+    let editions = sqlx::query("with a as (select sha256 from ordinals where id = ?) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;")
+      .bind(inscription_id)
+      .map(|row| InscriptionNumberEdition {
+          id: row.get("id"),
+          number: row.get("number"),
+          edition: row.get("edition")
+    })
+    .fetch_all(&pool).await.unwrap();
+    editions
+  }
+
+  async fn get_matching_inscriptions_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Vec<InscriptionNumberEdition> {
+    let editions = sqlx::query("with a as (select sha256 from ordinals where number = ?) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;")
+      .bind(number)
+      .map(|row| InscriptionNumberEdition {
+          id: row.get("id"),
+          number: row.get("number"),
+          edition: row.get("edition")
+    })
+    .fetch_all(&pool).await.unwrap();
+    editions
   }
 
 }
