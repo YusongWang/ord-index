@@ -95,16 +95,27 @@ pub struct Content {
   content_type: Option<String>
 }
 
-pub struct InscriptionNumberStatus {
-  inscription_number: i64,
-  status: String
-}
-
 #[derive(Clone, Serialize)]
 pub struct InscriptionNumberEdition {
   id: String,
   number: i64,
   edition: u64
+}
+
+#[derive(Clone, Serialize)]
+pub struct InscriptionMetadataForBlock {
+  id: String,
+  content_length: Option<i64>,
+  content_type: Option<String>,
+  genesis_fee: i64,
+  genesis_height: i64,
+  number: i64,
+  timestamp: i64
+}
+
+pub struct InscriptionNumberStatus {
+  inscription_number: i64,
+  status: String
 }
 
 #[derive(Clone)]
@@ -296,10 +307,13 @@ impl Vermilion {
           .route("/home", get(Self::home))
           .route("/inscription/:inscription_id", get(Self::inscription))
           .route("/inscription_number/:number", get(Self::inscription_number))
+          .route("/inscription_sha256/:sha256", get(Self::inscription_sha256))
           .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
-          .route("/inscription_number_metadata/:number", get(Self::inscription_number_metadata))
+          .route("/inscription_metadata_number/:number", get(Self::inscription_metadata_number))
           .route("/inscription_editions/:inscription_id", get(Self::inscription_editions))
-          .route("/inscription_number_editions/:number", get(Self::inscription_number_editions))
+          .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
+          .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
+          .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
@@ -575,6 +589,16 @@ impl Vermilion {
     )
   }
 
+  async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let content = Self::get_ordinal_content_by_sha256(server_config.pool, sha256).await;
+    let bytes = content.content;
+    let content_type = content.content_type.unwrap();
+    (
+        ([(axum::http::header::CONTENT_TYPE, content_type)]),
+        bytes,
+    )
+  }
+
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata_from_db(server_config.pool, inscription_id.to_string()).await;
     (
@@ -583,7 +607,7 @@ impl Vermilion {
     )
   }
 
-  async fn inscription_number_metadata(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata_from_db_by_number(server_config.pool, number).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -599,11 +623,27 @@ impl Vermilion {
     )
   }
 
-  async fn inscription_number_editions(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
+    )
+  }
+
+  async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
+    (
+        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+        Json(editions),
+    )
+  }
+
+  async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
+    (
+        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+        Json(inscriptions),
     )
   }
 
@@ -622,6 +662,17 @@ impl Vermilion {
   async fn get_ordinal_content_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Content {
     let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE number=?")
       .bind(number)
+      .map(|row| Content {
+          content: row.get("content"),
+          content_type: row.get("content_type")
+      })
+    .fetch_one(&pool).await.unwrap();
+    content
+  }
+
+  async fn get_ordinal_content_by_sha256(pool: sqlx::Pool<sqlx::MySql>, sha256: String) -> Content {
+    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE sha256=? LIMIT 1")
+      .bind(sha256)
       .map(|row| Content {
           content: row.get("content"),
           content_type: row.get("content_type")
@@ -700,4 +751,32 @@ impl Vermilion {
     editions
   }
 
+  async fn get_matching_inscriptions_by_sha256(pool: sqlx::Pool<sqlx::MySql>, sha256: String) -> Vec<InscriptionNumberEdition> {
+    let editions = sqlx::query("select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals where sha256=?;")
+      .bind(sha256)
+      .map(|row| InscriptionNumberEdition {
+          id: row.get("id"),
+          number: row.get("number"),
+          edition: row.get("edition")
+    })
+    .fetch_all(&pool).await.unwrap();
+    editions
+  }
+
+  async fn get_inscriptions_within_block(pool: sqlx::Pool<sqlx::MySql>, block: i64) -> Vec<InscriptionMetadataForBlock> {
+    let inscriptions = sqlx::query("SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=?")
+      .bind(block)
+      .map(|row| InscriptionMetadataForBlock {
+          id: row.get("id"),
+          content_length: row.get("content_length"),
+          content_type: row.get("content_type"),
+          genesis_fee: row.get("genesis_fee"),
+          genesis_height: row.get("genesis_height"),
+          number: row.get("number"),
+          timestamp: row.get("timestamp")
+      })
+    .fetch_all(&pool).await.unwrap();
+    inscriptions
+  }
+  
 }
