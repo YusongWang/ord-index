@@ -540,7 +540,9 @@ impl Vermilion {
 
   //Server api functions
   async fn root() -> &'static str {    
-    "Hello, World!"
+    "One of the fastest ways to dox yourself as a cryptopleb is to ask \"what's the reason for the Bitcoin pump today.\"
+
+    Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
