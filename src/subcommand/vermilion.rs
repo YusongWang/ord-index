@@ -124,7 +124,7 @@ pub struct ApiServerConfig {
 }
 
 impl Vermilion {
-  pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> Result {
+  pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> SubcommandResult {
     println!("Vermilion Indexer Running");
     //1. Normal Server
     let server = server::Server {
@@ -281,7 +281,7 @@ impl Vermilion {
         });
         
       }
-      Ok(())
+      Ok(Box::new(Empty {}) as Box<dyn Output>)
     })
   }
 
