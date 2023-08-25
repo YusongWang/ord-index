@@ -7,6 +7,7 @@ pub(crate) struct Config {
   pub(crate) bitcoin_rpc_pass: Option<String>,
   pub(crate) bitcoin_rpc_user: Option<String>,
   pub(crate) db_connection_string: Option<String>,
+  pub(crate) s3_bucket_name: Option<String>,
 }
 
 impl Config {
