@@ -1,6 +1,9 @@
 use super::*;
 use axum_server::Handle;
 use http::status;
+use log::Level;
+use logging_timer::stimer;
+use logging_timer::time;
 use crate::subcommand::server;
 use crate::index::fetcher;
 use crate::subcommand::wallet::inscriptions;
@@ -80,7 +83,6 @@ pub(crate) struct Vermilion {
 #[derive(Clone, Serialize)]
 pub struct Metadata {
   id: String,
-  address: Option<String>,
   content_length: Option<i64>,
   content_type: Option<String>,
   genesis_fee: i64,
@@ -92,7 +94,9 @@ pub struct Metadata {
   output_transaction: String,
   sat: Option<i64>,
   timestamp: i64,
-  sha256: Option<String>
+  sha256: Option<String>,
+  text: Option<String>,
+  is_json: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -201,18 +205,15 @@ impl Vermilion {
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_status_vector2 = status_vector.clone();
-        let cloned_options = options.clone();
         let fetcher = fetcher::Fetcher::new(&options)?;//Need a new fetcher for each thread
         tokio::task::spawn(async move {
           let _permit = permit;
           let needed_numbers = Self::get_needed_inscription_numbers(cloned_status_vector).await;
-          let needed_clone = needed_numbers.clone();
-          let needed_clone2 = needed_numbers.clone();
           let mut should_sleep = false;
           println!("Trying Numbers: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           //1. Get ids
           let mut inscription_ids: Vec<InscriptionId> = Vec::new();          
-          for j in needed_numbers {
+          for j in needed_numbers.clone() {
             let inscription_id = cloned_index.get_inscription_id_by_inscription_number(j).unwrap();
             match inscription_id {
               Some(inscription_id) => {
@@ -221,7 +222,7 @@ impl Vermilion {
               None => {
                 println!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop", j);
                 let mut status_vector = cloned_status_vector2.lock().await;
-                for l in needed_clone2 {
+                for l in needed_numbers.clone() {
                   let status = status_vector.iter_mut().find(|x| x.inscription_number == l).unwrap();
                   if l >= j {
                     status.status = "NOT_FOUND".to_string();
@@ -234,15 +235,16 @@ impl Vermilion {
           }
           
           //2. Get inscriptions
+          //println!("Get inscriptions: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           let cloned_ids = inscription_ids.clone();
           let cloned_ids2 = inscription_ids.clone();
           let txs = fetcher.get_transactions(inscription_ids.into_iter().map(|x| x.txid).collect()).await;
           let err_txs = match txs {
               Ok(txs) => Some(txs),
               Err(error) => {
-                println!("Error getting transactions {}-{}: {:?}", needed_clone[0], needed_clone[needed_clone.len()-1], error);
+                println!("Error getting transactions {}-{}: {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], error);
                 let mut status_vector = cloned_status_vector2.lock().await;
-                for j in needed_clone {
+                for j in needed_numbers.clone() {
                   let status = status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
                   status.status = "ERROR".to_string();
                 }
@@ -270,16 +272,18 @@ impl Vermilion {
             inscriptions.push(inscription);
           }
 
-          //3. Upload ordinal content to s3          
+          //3. Upload ordinal content to s3
+          //println!("Upload inscriptions: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           let id_inscriptions: Vec<_> = cloned_ids2.into_iter().zip(inscriptions.into_iter()).collect();
           for (inscription_id, inscription) in id_inscriptions.clone() {	
             Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription).await;	//TODO: Handle errors
           }
           
           //4. Get ordinal metadata
+          //println!("Get metadata: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           let mut status_vector = cloned_status_vector2.lock().await;
           for (inscription_id, inscription) in id_inscriptions.clone() {
-            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), &cloned_options, inscription_id, inscription.clone()).unwrap();
+            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
             let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
             let status = status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
             if result.is_err() {
@@ -290,7 +294,7 @@ impl Vermilion {
             }
           }
           let time = Instant::now();
-          println!("Finished numbers {} - {} @ {:?}", needed_clone[0], needed_clone[needed_clone.len()-1], time);
+          println!("Finished numbers {} - {} @ {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], time);
 
           //5. Sleep thread if up to date.
           if should_sleep {
@@ -352,6 +356,7 @@ impl Vermilion {
 
   //Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription) {
+    let tmr = stimer!(Level::Info; "upload_ordinal_content");
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
     let head_status = client	
@@ -416,8 +421,8 @@ impl Vermilion {
       }	
     };
   }
-
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, options: &Options, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
+  
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
     let entry = index
       .get_inscription_entry(inscription_id)
       .unwrap()
@@ -426,21 +431,6 @@ impl Vermilion {
       .get_inscription_satpoint_by_id(inscription_id)
       .unwrap()
       .unwrap();
-    let output = if satpoint.outpoint == unbound_outpoint() {
-      None
-    } else {
-      index
-        .get_transaction(satpoint.outpoint.txid)
-        .unwrap()
-        .unwrap()
-        .output
-        .into_iter()
-        .nth(satpoint.outpoint.vout.try_into().unwrap())
-    };
-    let address = match options.chain().address_from_script(&output.unwrap().script_pubkey) {
-      Ok(address) => Some(address.to_string()),
-      Err(_) => None,
-    };
     let content_length = match inscription.content_length() {
       Some(content_length) => Some(content_length as i64),
       None => {
@@ -463,9 +453,32 @@ impl Vermilion {
         None
       }
     };
+    let text = match inscription.body() {
+      Some(body) => {
+        let text = String::from_utf8(body.to_vec());
+        match text {
+          Ok(text) => Some(text),
+          Err(_) => None
+        }
+      },
+      None => {
+        None
+      }
+    };
+    let is_json = match inscription.body() {
+      Some(body) => {
+        let json = serde_json::from_slice::<serde::de::IgnoredAny>(body);
+        match json {
+          Ok(json) => true,
+          Err(_) => false
+        }
+      },
+      None => {
+        false
+      }
+    };
     let metadata = Metadata {
       id: inscription_id.to_string(),
-      address: address,
       content_length: content_length,
       content_type: inscription.content_type().map(str::to_string),
       genesis_fee: entry.fee.try_into().unwrap(),
@@ -477,7 +490,9 @@ impl Vermilion {
       output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
       timestamp: entry.timestamp.try_into().unwrap(),
-      sha256: sha256
+      sha256: sha256,
+      text: text,
+      is_json: is_json
     };
     Ok(metadata)
   }
@@ -487,7 +502,6 @@ impl Vermilion {
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
-          address text,
           content_length bigint,
           content_type text,
           genesis_fee bigint,
@@ -500,6 +514,8 @@ impl Vermilion {
           sat bigint,
           timestamp bigint,
           sha256 varchar(64),
+          text mediumtext,
+          is_json boolean,
           INDEX index_id (id),
           INDEX index_number (number),
           INDEX index_block (genesis_height),
@@ -511,10 +527,9 @@ impl Vermilion {
   pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn()?;
     let exec = conn.exec_iter(
-      r"INSERT INTO ordinals (id, address, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256)
-        VALUES (:id, :address, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256)",
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
       params! { "id" => metadata.id,
-                "address" => metadata.address,
                 "content_length" => metadata.content_length,
                 "content_type" => metadata.content_type,
                 "genesis_fee" => metadata.genesis_fee,
@@ -526,7 +541,9 @@ impl Vermilion {
                 "output_transaction" => metadata.output_transaction,
                 "sat" => metadata.sat,
                 "timestamp" => metadata.timestamp,
-                "sha256" => metadata.sha256
+                "sha256" => metadata.sha256,
+                "text" => metadata.text,
+                "is_json" => metadata.is_json
       }
     );
     match exec {
@@ -787,7 +804,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       .bind(inscription_id)
       .map(|row| Metadata {
           id: row.get("id"),
-          address: row.get("address"),
           content_length: row.get("content_length"),
           content_type: row.get("content_type"), 
           genesis_fee: row.get("genesis_fee"),
@@ -799,7 +815,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
           output_transaction: row.get("output_transaction"),
           sat: row.get("sat"),
           timestamp: row.get("timestamp"),
-          sha256: row.get("sha256")
+          sha256: row.get("sha256"),
+          text: row.get("text"),
+          is_json: row.get("is_json")
       })
       .fetch_one(&pool).await.unwrap();
     row    
@@ -810,7 +828,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       .bind(number)
       .map(|row| Metadata {
           id: row.get("id"),
-          address: row.get("address"),
           content_length: row.get("content_length"),
           content_type: row.get("content_type"), 
           genesis_fee: row.get("genesis_fee"),
@@ -822,7 +839,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
           output_transaction: row.get("output_transaction"),
           sat: row.get("sat"),
           timestamp: row.get("timestamp"),
-          sha256: row.get("sha256")
+          sha256: row.get("sha256"),
+          text: row.get("text"),
+          is_json: row.get("is_json")
       })
       .fetch_one(&pool).await.unwrap();
     row    
