@@ -195,9 +195,10 @@ impl Vermilion {
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str())?;
-      let s3_config = aws_config::from_env().region("us-east-1").load().await;
+      let s3_config = aws_config::from_env().load().await;
       let s3client = s3::Client::new(&s3_config);
       let s3_bucket_name = config.s3_bucket_name.unwrap();
+      let s3_upload_start_number = config.s3_upload_start_number.unwrap_or(0);
       let n_threads = self.n_threads.unwrap_or(1).into();
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
@@ -262,8 +263,7 @@ impl Vermilion {
           //2. Get inscriptions
           let t3 = Instant::now();
           let cloned_ids = inscription_ids.clone();
-          let cloned_ids2 = inscription_ids.clone();
-          let txs = fetcher.get_transactions(inscription_ids.into_iter().map(|x| x.txid).collect()).await;
+          let txs = fetcher.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect()).await;
           let err_txs = match txs {
               Ok(txs) => Some(txs),
               Err(error) => {
@@ -288,9 +288,10 @@ impl Vermilion {
               }
           };
           let clean_txs = err_txs.unwrap();
+          let cloned_ids = inscription_ids.clone();
           let id_txs: Vec<_> = cloned_ids.into_iter().zip(clean_txs.into_iter()).collect();
           let mut inscriptions: Vec<Inscription> = Vec::new();
-          for (inscription_id,tx) in id_txs {
+          for (inscription_id, tx) in id_txs {
             let inscription = Inscription::from_transaction(&tx)
               .get(inscription_id.index as usize)
               .map(|transaction_inscription| transaction_inscription.inscription.clone())
@@ -300,17 +301,28 @@ impl Vermilion {
 
           //3. Upload ordinal content to s3
           let t4 = Instant::now();
-          let id_inscriptions: Vec<_> = cloned_ids2.into_iter().zip(inscriptions.into_iter()).collect();
-          for (inscription_id, inscription) in id_inscriptions.clone() {	
+          let cloned_ids = inscription_ids.clone();
+          let cloned_inscriptions = inscriptions.clone();
+          let number_id_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
+            .zip(cloned_ids.into_iter())
+            .zip(cloned_inscriptions.into_iter())
+            .map(|((x, y), z)| (x, y, z))
+            .collect();          
+          for (number, inscription_id, inscription) in number_id_inscriptions {
+            if number < s3_upload_start_number {
+                continue;
+            }
             Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription).await;	//TODO: Handle errors
           }
           
           //4. Get ordinal metadata
           let t5 = Instant::now();
-          let status_vector = cloned_status_vector.clone();          
+          let status_vector = cloned_status_vector.clone();
+          let cloned_ids = inscription_ids.clone();
+          let cloned_inscriptions = inscriptions.clone();
           
-
-          for (inscription_id, inscription) in id_inscriptions.clone() {
+          let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
+          for (inscription_id, inscription) in id_inscriptions {
             let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();            
             let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
             let mut locked_status_vector = status_vector.lock().await;
@@ -343,7 +355,7 @@ impl Vermilion {
             get_metadata_end: t6
           };
           cloned_timing_vector.lock().await.push(timing);
-          Self::print_index_timings(cloned_timing_vector).await;
+          Self::print_index_timings(cloned_timing_vector, n_threads as u32).await;
 
           //6. Sleep thread if up to date.
           if should_sleep {
@@ -370,9 +382,10 @@ impl Vermilion {
           .idle_timeout(Some(Duration::from_secs(60)))
           .max_lifetime(Some(Duration::from_secs(120)))
           .connect(url.as_str()).await.unwrap();
-        let s3_config = aws_config::from_env().region("us-east-1").load().await;	
-        let s3client = s3::Client::new(&s3_config);
+
         let bucket_name = config.s3_bucket_name.unwrap();
+        let s3_config = aws_config::from_env().load().await;	
+        let s3client = s3::Client::new(&s3_config);
         let server_config = ApiServerConfig {
           pool: pool,
           s3client: s3client,
@@ -706,7 +719,7 @@ impl Vermilion {
     needed_inscription_numbers
   }
 
-  pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>) {
+  pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>, n_threads: u32) {
     let mut locked_timings = timings.lock().await;
     locked_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
     //First get the relevant entries
@@ -715,7 +728,7 @@ impl Vermilion {
     for timing in locked_timings.iter().rev() {
       if timing.inscription_start == last - 1000 {
         relevant_timings.push(timing.clone());
-        if relevant_timings.len() == 10 {
+        if relevant_timings.len() == n_threads as usize {
           break;
         }
       } else {
@@ -724,7 +737,7 @@ impl Vermilion {
       }      
       last = timing.inscription_start;
     }
-    if relevant_timings.len() < 10 {
+    if relevant_timings.len() < n_threads as usize {
       return;
     }    
     relevant_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));    
@@ -748,13 +761,13 @@ impl Vermilion {
     }
     println!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
     println!("Total time: {:?}", relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start));
-    println!("Queueing time avg per thread: {:?}", queueing_total/9); //9 because the first one doesn't have a recorded queueing time
-    println!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/10); //should be similar to queueing time
-    println!("Get numbers time avg per thread: {:?}", get_numbers_total/10);
-    println!("Get id time avg per thread: {:?}", get_id_total/10);
-    println!("Get inscription time avg per thread: {:?}", get_inscription_total/10);
-    println!("Upload content time avg per thread: {:?}", upload_content_total/10);
-    println!("Get metadata time avg per thread: {:?}", get_metadata_total/10);
+    println!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
+    println!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
+    println!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
+    println!("Get id time avg per thread: {:?}", get_id_total/n_threads);
+    println!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
+    println!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
+    println!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
 
     //Remove printed timings
     let to_remove = BTreeSet::from_iter(relevant_timings);
