@@ -4,6 +4,7 @@ use http::status;
 use log::Level;
 use logging_timer::stimer;
 use logging_timer::time;
+use mysql::TxOpts;
 use crate::subcommand::server;
 use crate::index::fetcher;
 use crate::subcommand::wallet::inscriptions;
@@ -144,7 +145,10 @@ pub struct IndexerTimings {
   upload_content_start: Instant,
   upload_content_end: Instant,
   get_metadata_start: Instant,
-  get_metadata_end: Instant
+  get_metadata_end: Instant,
+  retrieval: Duration,
+  insertion: Duration,
+  locking: Duration
 }
 
 #[derive(Clone)]
@@ -323,9 +327,15 @@ impl Vermilion {
           let cloned_inscriptions = inscriptions.clone();
           
           let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
+          let mut retrieval = Duration::from_millis(0);
+          let mut insertion = Duration::from_millis(0);
+          let mut locking = Duration::from_millis(0);
           for (inscription_id, inscription) in id_inscriptions {
-            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();            
+            let t0 = Instant::now();
+            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
+            let t1 = Instant::now();    
             let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
+            let t2 = Instant::now();
             let mut locked_status_vector = status_vector.lock().await;
             let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
             if result.is_err() {
@@ -334,6 +344,10 @@ impl Vermilion {
             } else {
               status.status = "SUCCESS".to_string();
             }
+            let t3 = Instant::now();
+            retrieval += t1.duration_since(t0);
+            insertion += t2.duration_since(t1);
+            locking += t3.duration_since(t2);
           }
           
           //5. Log timings
@@ -353,7 +367,10 @@ impl Vermilion {
             upload_content_start: t4,
             upload_content_end: t5,
             get_metadata_start: t5,
-            get_metadata_end: t6
+            get_metadata_end: t6,
+            retrieval: retrieval,
+            insertion: insertion,
+            locking: locking
           };
           cloned_timing_vector.lock().await.push(timing);
           Self::print_index_timings(cloned_timing_vector, n_threads as u32).await;
@@ -484,7 +501,7 @@ impl Vermilion {
       }	
     };
   }
-  
+
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -588,7 +605,9 @@ impl Vermilion {
   }
 
   pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let t0 = Instant::now();
     let mut conn = pool.get_conn().unwrap();
+    let t1 = Instant::now();
     let exec = conn.exec_iter(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
         VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
@@ -609,10 +628,49 @@ impl Vermilion {
                 "is_json" => metadata.is_json
       }
     );
+    let t2 = Instant::now();
+    if t1.duration_since(t0) > Duration::from_millis(1) {
+      println!("Acquire: {:?} Insert: {:?}", t1.duration_since(t0), t2.duration_since(t1));
+    }
+    
     match exec {
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error inserting ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) fn bulk_insert_metadata(pool: &mysql::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+    let exec = tx.exec_batch(
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
+        metadata_vec.iter().map(|metadata| params! { 
+          "id" => &metadata.id,
+          "content_length" => &metadata.content_length,
+          "content_type" => &metadata.content_type,
+          "genesis_fee" => &metadata.genesis_fee,
+          "genesis_height" => &metadata.genesis_height,
+          "genesis_transaction" => &metadata.genesis_transaction,
+          "location" => &metadata.location,
+          "number" => &metadata.number,
+          "offset" => &metadata.offset,
+          "output_transaction" => &metadata.output_transaction,
+          "sat" => &metadata.sat,
+          "timestamp" => &metadata.timestamp,
+          "sha256" => &metadata.sha256,
+          "text" => &metadata.text,
+          "is_json" => &metadata.is_json
+      })
+    );
+    let result = tx.commit();
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting ordinal metadata: {}", error);
         Err(Box::new(error))
       }
     }
@@ -749,6 +807,9 @@ impl Vermilion {
     let mut get_inscription_total = Duration::new(0,0);
     let mut upload_content_total = Duration::new(0,0);
     let mut get_metadata_total = Duration::new(0,0);
+    let mut retrieval_total = Duration::new(0,0);
+    let mut insertion_total = Duration::new(0,0);
+    let mut locking_total = Duration::new(0,0);
     let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
     for timing in relevant_timings.iter() {
       queueing_total = queueing_total + timing.acquire_permit_start.duration_since(last_start);
@@ -758,6 +819,9 @@ impl Vermilion {
       get_inscription_total = get_inscription_total + timing.get_inscription_end.duration_since(timing.get_inscription_start);
       upload_content_total = upload_content_total + timing.upload_content_end.duration_since(timing.upload_content_start);
       get_metadata_total = get_metadata_total + timing.get_metadata_end.duration_since(timing.get_metadata_start);
+      retrieval_total = retrieval_total + timing.retrieval;
+      insertion_total = insertion_total + timing.insertion;
+      locking_total = locking_total + timing.locking;
       last_start = timing.acquire_permit_start;
     }
     println!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
@@ -769,6 +833,9 @@ impl Vermilion {
     println!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
     println!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
     println!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
+    println!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
+    println!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
+    println!("--Locking time avg per thread: {:?}", locking_total/n_threads);
 
     //Remove printed timings
     let to_remove = BTreeSet::from_iter(relevant_timings);
