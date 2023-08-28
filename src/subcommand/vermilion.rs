@@ -330,24 +330,32 @@ impl Vermilion {
           let mut retrieval = Duration::from_millis(0);
           let mut insertion = Duration::from_millis(0);
           let mut locking = Duration::from_millis(0);
+          let mut metadata_vec: Vec<Metadata> = Vec::new();
           for (inscription_id, inscription) in id_inscriptions {
             let t0 = Instant::now();
             let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
-            let t1 = Instant::now();    
-            let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
-            let t2 = Instant::now();
+            metadata_vec.push(metadata.clone());
+            let t1 = Instant::now();            
+            retrieval += t1.duration_since(t0);
+          }
+          //4.1 Insert metadata
+          let t51 = Instant::now();
+          let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec);
+          //4.2 Update status
+          let t52 = Instant::now();
+          if insert_result.is_err() {
+            println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
             let mut locked_status_vector = status_vector.lock().await;
-            let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
-            if result.is_err() {
-              println!("Error inserting metadata for inscription number: {}. Marking as error", metadata.number);
+            for j in needed_numbers.clone() {              
+              let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
               status.status = "ERROR".to_string();
-            } else {
+            }
+          } else {
+            let mut locked_status_vector = status_vector.lock().await;
+            for j in needed_numbers.clone() {              
+              let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
               status.status = "SUCCESS".to_string();
             }
-            let t3 = Instant::now();
-            retrieval += t1.duration_since(t0);
-            insertion += t2.duration_since(t1);
-            locking += t3.duration_since(t2);
           }
           
           //5. Log timings
@@ -369,8 +377,8 @@ impl Vermilion {
             get_metadata_start: t5,
             get_metadata_end: t6,
             retrieval: retrieval,
-            insertion: insertion,
-            locking: locking
+            insertion: t52.duration_since(t51),
+            locking: t6.duration_since(t52)
           };
           cloned_timing_vector.lock().await.push(timing);
           Self::print_index_timings(cloned_timing_vector, n_threads as u32).await;
