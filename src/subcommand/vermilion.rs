@@ -133,10 +133,10 @@ pub struct InscriptionNumberStatus {
 pub struct IndexerTimings {
   inscription_start: i64,
   inscription_end: i64,
-  clone_start: Instant,
-  clone_end: Instant,
-  permit_acquire_start: Instant,
-  permit_acquire_end: Instant,
+  acquire_permit_start: Instant,
+  acquire_permit_end: Instant,
+  get_numbers_start: Instant,
+  get_numbers_end: Instant,
   get_id_start: Instant,
   get_id_end: Instant,
   get_inscription_start: Instant,
@@ -225,13 +225,12 @@ impl Vermilion {
         let cloned_s3client = s3client.clone();
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
-        let cloned_status_vector2 = status_vector.clone();
         let cloned_timing_vector = timing_vector.clone();
         let fetcher = fetcher::Fetcher::new(&options)?;//Need a new fetcher for each thread
         tokio::task::spawn(async move {
           let t1 = Instant::now();
           let _permit = permit;
-          let needed_numbers = Self::get_needed_inscription_numbers(cloned_status_vector).await;
+          let needed_numbers = Self::get_needed_inscription_numbers(cloned_status_vector.clone()).await;
           let mut should_sleep = false;
           println!("Trying Numbers: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);          
 
@@ -246,9 +245,10 @@ impl Vermilion {
               },
               None => {
                 println!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop", j);
-                let mut status_vector = cloned_status_vector2.lock().await;
-                for l in needed_numbers.clone() {
-                  let status = status_vector.iter_mut().find(|x| x.inscription_number == l).unwrap();
+                let status_vector = cloned_status_vector.clone();
+                for l in needed_numbers.clone() {                  
+                  let mut locked_status_vector = status_vector.lock().await;
+                  let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == l).unwrap();
                   if l >= j {
                     status.status = "NOT_FOUND".to_string();
                   }                
@@ -261,7 +261,6 @@ impl Vermilion {
           
           //2. Get inscriptions
           let t3 = Instant::now();
-          //println!("Get inscriptions: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           let cloned_ids = inscription_ids.clone();
           let cloned_ids2 = inscription_ids.clone();
           let txs = fetcher.get_transactions(inscription_ids.into_iter().map(|x| x.txid).collect()).await;
@@ -269,9 +268,10 @@ impl Vermilion {
               Ok(txs) => Some(txs),
               Err(error) => {
                 println!("Error getting transactions {}-{}: {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], error);
-                let mut status_vector = cloned_status_vector2.lock().await;
-                for j in needed_numbers.clone() {
-                  let status = status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
+                let status_vector = cloned_status_vector.clone();
+                for j in needed_numbers.clone() {                  
+                  let mut locked_status_vector = status_vector.lock().await;
+                  let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
                   status.status = "ERROR".to_string();
                 }
                 println!("error string: {}", error.to_string());
@@ -280,7 +280,7 @@ impl Vermilion {
                     error.to_string().contains("error trying to connect") || 
                     error.to_string().contains("end of file") {
                   println!("Pausing for 60s & Breaking from loop");
-                  std::mem::drop(status_vector); //Drop the mutex so sleep doesn't block
+                  //std::mem::drop(locked_status_vector); //Drop the mutex so sleep doesn't block
                   tokio::time::sleep(Duration::from_secs(60)).await;
                 }
                 return;
@@ -300,7 +300,6 @@ impl Vermilion {
 
           //3. Upload ordinal content to s3
           let t4 = Instant::now();
-          //println!("Upload inscriptions: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
           let id_inscriptions: Vec<_> = cloned_ids2.into_iter().zip(inscriptions.into_iter()).collect();
           for (inscription_id, inscription) in id_inscriptions.clone() {	
             Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription).await;	//TODO: Handle errors
@@ -308,12 +307,14 @@ impl Vermilion {
           
           //4. Get ordinal metadata
           let t5 = Instant::now();
-          //println!("Get metadata: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
-          let mut status_vector = cloned_status_vector2.lock().await;
+          let status_vector = cloned_status_vector.clone();          
+          
+
           for (inscription_id, inscription) in id_inscriptions.clone() {
-            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
+            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();            
             let result = Self::insert_metadata(&cloned_pool.clone(), metadata.clone());
-            let status = status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
+            let mut locked_status_vector = status_vector.lock().await;
+            let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == metadata.number).unwrap();
             if result.is_err() {
               println!("Error inserting metadata for inscription number: {}. Marking as error", metadata.number);
               status.status = "ERROR".to_string();
@@ -321,15 +322,17 @@ impl Vermilion {
               status.status = "SUCCESS".to_string();
             }
           }
+          
+          //5. Log timings
           let t6 = Instant::now();
           println!("Finished numbers {} - {} @ {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], t5);
           let timing = IndexerTimings {
             inscription_start: needed_numbers[0],
             inscription_end: needed_numbers[&needed_numbers.len()-1],
-            clone_start: t0,
-            clone_end: t1,
-            permit_acquire_start: t1,
-            permit_acquire_end: t2,
+            acquire_permit_start: t0,
+            acquire_permit_end: t1,
+            get_numbers_start: t1,
+            get_numbers_end: t2,
             get_id_start: t2,
             get_id_end: t3,
             get_inscription_start: t3,
@@ -342,7 +345,7 @@ impl Vermilion {
           cloned_timing_vector.lock().await.push(timing);
           Self::print_index_timings(cloned_timing_vector).await;
 
-          //5. Sleep thread if up to date.
+          //6. Sleep thread if up to date.
           if should_sleep {
             println!("Sleeping for 60s");
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -570,8 +573,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn()?;
+  pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().unwrap();
     let exec = conn.exec_iter(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
         VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
@@ -643,7 +646,6 @@ impl Vermilion {
   }
 
   pub(crate) async fn get_needed_inscription_numbers(status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>>) -> Vec<i64> {
-    let tmr = stimer!(Level::Warn; "get_needed_inscription_numbers");
     let mut status_vector = status_vector.lock().await;
     let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.inscription_number).unwrap().inscription_number;
     let mut needed_inscription_numbers: Vec<i64> = Vec::new();
@@ -727,28 +729,28 @@ impl Vermilion {
     }    
     relevant_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));    
     let mut queueing_total = Duration::new(0,0);
-    let mut cloning_total = Duration::new(0,0);
-    let mut permit_acquire_total = Duration::new(0,0);
+    let mut acquire_permit_total = Duration::new(0,0);
+    let mut get_numbers_total = Duration::new(0,0);
     let mut get_id_total = Duration::new(0,0);
     let mut get_inscription_total = Duration::new(0,0);
     let mut upload_content_total = Duration::new(0,0);
     let mut get_metadata_total = Duration::new(0,0);
-    let mut last_start = relevant_timings.first().unwrap().clone_start;
+    let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
     for timing in relevant_timings.iter() {
-      queueing_total = queueing_total + timing.clone_start.duration_since(last_start);
-      cloning_total = cloning_total + timing.clone_end.duration_since(timing.clone_start);
-      permit_acquire_total = permit_acquire_total + timing.permit_acquire_end.duration_since(timing.permit_acquire_start);
+      queueing_total = queueing_total + timing.acquire_permit_start.duration_since(last_start);
+      acquire_permit_total = acquire_permit_total + timing.acquire_permit_end.duration_since(timing.acquire_permit_start);
+      get_numbers_total = get_numbers_total + timing.get_numbers_end.duration_since(timing.get_numbers_start);
       get_id_total = get_id_total + timing.get_id_end.duration_since(timing.get_id_start);
       get_inscription_total = get_inscription_total + timing.get_inscription_end.duration_since(timing.get_inscription_start);
       upload_content_total = upload_content_total + timing.upload_content_end.duration_since(timing.upload_content_start);
       get_metadata_total = get_metadata_total + timing.get_metadata_end.duration_since(timing.get_metadata_start);
-      last_start = timing.clone_start;
+      last_start = timing.acquire_permit_start;
     }
     println!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
-    println!("Total time: {:?}", relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().permit_acquire_start));
-    println!("Queueing time avg per thread: {:?}", queueing_total/9);
-    println!("Cloning time avg per thread: {:?}", cloning_total/10);
-    println!("Permit acquire time avg per thread: {:?}", permit_acquire_total/10);
+    println!("Total time: {:?}", relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start));
+    println!("Queueing time avg per thread: {:?}", queueing_total/9); //9 because the first one doesn't have a recorded queueing time
+    println!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/10); //should be similar to queueing time
+    println!("Get numbers time avg per thread: {:?}", get_numbers_total/10);
     println!("Get id time avg per thread: {:?}", get_id_total/10);
     println!("Get inscription time avg per thread: {:?}", get_inscription_total/10);
     println!("Upload content time avg per thread: {:?}", upload_content_total/10);
