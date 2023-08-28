@@ -204,7 +204,8 @@ impl Vermilion {
       let status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).unwrap();
-      let start_number = Self::get_start_number(&pool).unwrap();
+      let start_number = Self::get_start_number(&pool).unwrap();      
+      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
       let initial = InscriptionNumberStatus {
         inscription_number: start_number,
         status: "UNKNOWN".to_string()
@@ -648,7 +649,7 @@ impl Vermilion {
         }
       }
     };
-    println!("Inscription numbers fully populated up to: {:?}, removing any straggler entries after this point.", number);
+    println!("Inscription numbers in db fully populated up to: {:?}, removing any straggler entries after this point.", number);
     let exec = conn.exec_iter(
       r"DELETE FROM ordinals WHERE number>:big_number;",
       params! { "big_number" => number
