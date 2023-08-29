@@ -1,19 +1,14 @@
 use super::*;
 use axum_server::Handle;
-use http::status;
 use log::Level;
 use logging_timer::stimer;
-use logging_timer::time;
 use mysql::TxOpts;
 use crate::subcommand::server;
 use crate::index::fetcher;
-use crate::subcommand::wallet::inscriptions;
 
 use mysql::Pool;
 use mysql::prelude::Queryable;
 use mysql::params;
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::Row;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use serde::Serialize;
@@ -22,16 +17,13 @@ use sha256::digest;
 use s3::operation::get_object::GetObjectOutput;
 use aws_sdk_s3 as s3;	
 use s3::primitives::ByteStream;	
-use s3::error::{SdkError, ProvideErrorMetadata};	
-use s3::operation::put_object::{PutObjectOutput, PutObjectError};
+use s3::error::ProvideErrorMetadata;	
 
 use axum::{
   routing::get,
-  http::StatusCode,
-  response::IntoResponse,
   Json, 
   Router,
-  extract::{Extension, Path, Query, State},
+  extract::{Path, State},
 };
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -153,7 +145,7 @@ pub struct IndexerTimings {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  pool: sqlx::Pool<sqlx::MySql>,
+  pool: mysql::Pool,
   s3client: s3::Client,
   bucket_name: String
 }
@@ -290,7 +282,6 @@ impl Vermilion {
                   tokio::time::sleep(Duration::from_secs(60)).await;
                 }
                 return;
-                None
               }
           };
           let clean_txs = err_txs.unwrap();
@@ -329,8 +320,6 @@ impl Vermilion {
           
           let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
           let mut retrieval = Duration::from_millis(0);
-          let mut insertion = Duration::from_millis(0);
-          let mut locking = Duration::from_millis(0);
           let mut metadata_vec: Vec<Metadata> = Vec::new();
           for (inscription_id, inscription) in id_inscriptions {
             let t0 = Instant::now();
@@ -400,16 +389,11 @@ impl Vermilion {
     println!("Vermilion Server Running");
     let api_server_options_clone = options.clone();
     let verm_server_thread = thread::spawn(move ||{
-      let mut rt = Runtime::new().unwrap();
+      let rt = Runtime::new().unwrap();
       rt.block_on(async move {
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
-        let pool = MySqlPoolOptions::new()
-          .max_connections(5)
-          .idle_timeout(Some(Duration::from_secs(60)))
-          .max_lifetime(Some(Duration::from_secs(120)))
-          .connect(url.as_str()).await.unwrap();
-
+        let pool = Pool::new(url.as_str()).unwrap();
         let bucket_name = config.s3_bucket_name.unwrap();
         let s3_config = aws_config::from_env().load().await;	
         let s3client = s3::Client::new(&s3_config);
@@ -445,7 +429,7 @@ impl Vermilion {
 
   //Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
-    let tmr = stimer!(Level::Info; "upload_ordinal_content");
+    let _tmr = stimer!(Level::Info; "upload_ordinal_content");
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
     if head_check {
@@ -456,7 +440,7 @@ impl Vermilion {
         .send()	
         .await;
       match head_status {	
-        Ok(head_status) => {	
+        Ok(_) => {	
           log::info!("Ordinal content already exists in S3: {}", id.clone());	
           return;	
         }	
@@ -501,7 +485,7 @@ impl Vermilion {
       .send()	
       .await;
 
-    let ret = match put_status {	
+    let _ret = match put_status {	
       Ok(put_status) => {	
         log::info!("Uploaded ordinal content to S3: {}", id.clone());	
         put_status	
@@ -560,7 +544,7 @@ impl Vermilion {
       Some(body) => {
         let json = serde_json::from_slice::<serde::de::IgnoredAny>(body);
         match json {
-          Ok(json) => true,
+          Ok(_) => true,
           Err(_) => false
         }
       },
@@ -656,7 +640,7 @@ impl Vermilion {
   pub(crate) fn bulk_insert_metadata(pool: &mysql::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
     let mut conn = pool.get_conn().unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
-    let exec = tx.exec_batch(
+    let _exec = tx.exec_batch(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
         VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
         metadata_vec.iter().map(|metadata| params! { 
@@ -689,7 +673,7 @@ impl Vermilion {
 
   pub(crate) fn get_start_number(pool: &mysql::Pool) -> Result<i64, Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn()?;
-    let mut row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
+    let row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
       .unwrap()
       .next()
       .unwrap()
@@ -719,7 +703,7 @@ impl Vermilion {
       }
     };
     println!("Inscription numbers in db fully populated up to: {:?}, removing any straggler entries after this point, and starting metadata upload from {:?}", number-1, number);
-    let exec = conn.exec_iter(
+    let _exec = conn.exec_iter(
       r"DELETE FROM ordinals WHERE number>:big_number;",
       params! { "big_number" => number
       }
@@ -778,7 +762,7 @@ impl Vermilion {
           status.status = "PENDING".to_string();
         },
         None => {
-          let mut status = InscriptionNumberStatus{
+          let status = InscriptionNumberStatus{
             inscription_number: number,
             status: "PENDING".to_string(),
           };
@@ -966,11 +950,16 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: sqlx::Pool<sqlx::MySql>, client: s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
-    let inscription_id = sqlx::query("SELECT id FROM ordinals WHERE number=?")
-      .bind(number)
-      .map(|row: sqlx::mysql::MySqlRow| row.get::<String, &str>("id"))
-      .fetch_one(&pool).await.unwrap();
+  async fn get_ordinal_content_by_number(pool: mysql::Pool, client: s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
+    let mut conn = pool.get_conn().unwrap();
+    let inscription_id: String = conn.exec_first(
+      "SELECT id FROM ordinals WHERE number=:number LIMIT 1", 
+      params! {
+        "number" => number
+      }
+    )
+    .unwrap()
+    .unwrap();
 
     let key = format!("content/{}", inscription_id);
     let content = client
@@ -983,11 +972,16 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: sqlx::Pool<sqlx::MySql>, client: s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
-    let inscription_id = sqlx::query("SELECT id FROM ordinals WHERE sha256=? LIMIT 1")
-      .bind(sha256)
-      .map(|row: sqlx::mysql::MySqlRow| row.get::<String, &str>("id"))
-      .fetch_one(&pool).await.unwrap();
+  async fn get_ordinal_content_by_sha256(pool: mysql::Pool, client: s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
+    let mut conn = pool.get_conn().unwrap();
+    let inscription_id: String = conn.exec_first(
+      "SELECT id FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
+      params! {
+        "sha256" => sha256
+      }
+    )
+    .unwrap()
+    .unwrap();
 
     let key = format!("content/{}", inscription_id);
     let content = client
@@ -1000,137 +994,184 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_metadata(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Metadata {
-    let row = sqlx::query("SELECT * FROM ordinals WHERE id=?")
-      .bind(inscription_id)
-      .map(|row| Metadata {
-          id: row.get("id"),
-          content_length: row.get("content_length"),
-          content_type: row.get("content_type"), 
-          genesis_fee: row.get("genesis_fee"),
-          genesis_height: row.get("genesis_height"),
-          genesis_transaction: row.get("genesis_transaction"),
-          location: row.get("location"),
-          number: row.get("number"),
-          offset: row.get("offset"),
-          output_transaction: row.get("output_transaction"),
-          sat: row.get("sat"),
-          timestamp: row.get("timestamp"),
-          sha256: row.get("sha256"),
-          text: row.get("text"),
-          is_json: row.get("is_json")
-      })
-      .fetch_one(&pool).await.unwrap();
-    row    
+  async fn get_ordinal_metadata(pool: mysql::Pool, inscription_id: String) -> Metadata {
+    let mut conn = pool.get_conn().unwrap();
+    let result = conn.exec_map(
+      "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
+      params! {
+        "id" => inscription_id
+      },
+      |mut row: mysql::Row| Metadata {
+        id: row.get("id").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(), 
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        location: row.get("location").unwrap(),
+        number: row.get("number").unwrap(),
+        offset: row.get("offset").unwrap(),
+        output_transaction: row.get("output_transaction").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap()
+      }
+    );
+    let result = result.unwrap().pop().unwrap();
+    result
   }
 
-  async fn get_ordinal_metadata_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Metadata {
-    let row: Metadata = sqlx::query("SELECT * FROM ordinals WHERE number=?")
-      .bind(number)
-      .map(|row| Metadata {
-          id: row.get("id"),
-          content_length: row.get("content_length"),
-          content_type: row.get("content_type"), 
-          genesis_fee: row.get("genesis_fee"),
-          genesis_height: row.get("genesis_height"),
-          genesis_transaction: row.get("genesis_transaction"),
-          location: row.get("location"),
-          number: row.get("number"),
-          offset: row.get("offset"),
-          output_transaction: row.get("output_transaction"),
-          sat: row.get("sat"),
-          timestamp: row.get("timestamp"),
-          sha256: row.get("sha256"),
-          text: row.get("text"),
-          is_json: row.get("is_json")
-      })
-      .fetch_one(&pool).await.unwrap();
-    row    
+  async fn get_ordinal_metadata_by_number(pool: mysql::Pool, number: i64) -> Metadata {
+    let mut conn = pool.get_conn().unwrap();
+    let result = conn.exec_map(
+      "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
+      params! {
+        "number" => number
+      },
+      |mut row: mysql::Row| Metadata {
+        id: row.get("id").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(), 
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        location: row.get("location").unwrap(),
+        number: row.get("number").unwrap(),
+        offset: row.get("offset").unwrap(),
+        output_transaction: row.get("output_transaction").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap()
+      }
+    );
+    let result = result.unwrap().pop().unwrap();
+    result    
   }
 
-  async fn get_matching_inscriptions(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Vec<InscriptionNumberEdition> {
-    let editions = sqlx::query("with a as (select sha256 from ordinals where id = ?) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;")
-      .bind(inscription_id)
-      .map(|row| InscriptionNumberEdition {
-          id: row.get("id"),
-          number: row.get("number"),
-          edition: row.get("edition")
-    })
-    .fetch_all(&pool).await.unwrap();
+  async fn get_matching_inscriptions(pool: mysql::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = pool.get_conn().unwrap();
+    let editions = conn.exec_map(
+      "with a as (select sha256 from ordinals where id = :id) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
+      params! {
+        "id" => inscription_id
+      },
+      |row: mysql::Row| InscriptionNumberEdition {
+        id: row.get("id").unwrap(),
+        number: row.get("number").unwrap(),
+        edition: row.get("edition").unwrap()
+      }
+    ).unwrap();
     editions
   }
 
-  async fn get_matching_inscriptions_by_number(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Vec<InscriptionNumberEdition> {
-    let editions = sqlx::query("with a as (select sha256 from ordinals where number = ?) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;")
-      .bind(number)
-      .map(|row| InscriptionNumberEdition {
-          id: row.get("id"),
-          number: row.get("number"),
-          edition: row.get("edition")
-    })
-    .fetch_all(&pool).await.unwrap();
+  async fn get_matching_inscriptions_by_number(pool: mysql::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
+    let mut conn = pool.get_conn().unwrap();
+    let editions = conn.exec_map(
+      "with a as (select sha256 from ordinals where number = :number) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
+      params! {
+        "number" => number
+      },
+      |row: mysql::Row| InscriptionNumberEdition {
+        id: row.get("id").unwrap(),
+        number: row.get("number").unwrap(),
+        edition: row.get("edition").unwrap()
+      }
+    ).unwrap();
     editions
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: sqlx::Pool<sqlx::MySql>, sha256: String) -> Vec<InscriptionNumberEdition> {
-    let editions = sqlx::query("select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals where sha256=?;")
-      .bind(sha256)
-      .map(|row| InscriptionNumberEdition {
-          id: row.get("id"),
-          number: row.get("number"),
-          edition: row.get("edition")
-    })
-    .fetch_all(&pool).await.unwrap();
+  async fn get_matching_inscriptions_by_sha256(pool: mysql::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = pool.get_conn().unwrap();
+    let editions = conn.exec_map(
+      "select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals where sha256=:sha256;", 
+      params! {
+        "sha256" => sha256
+      },
+      |row: mysql::Row| InscriptionNumberEdition {
+        id: row.get("id").unwrap(),
+        number: row.get("number").unwrap(),
+        edition: row.get("edition").unwrap()
+      }
+    ).unwrap();
     editions
   }
 
-  async fn get_inscriptions_within_block(pool: sqlx::Pool<sqlx::MySql>, block: i64) -> Vec<InscriptionMetadataForBlock> {
-    let inscriptions = sqlx::query("SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=?")
-      .bind(block)
-      .map(|row| InscriptionMetadataForBlock {
-          id: row.get("id"),
-          content_length: row.get("content_length"),
-          content_type: row.get("content_type"),
-          genesis_fee: row.get("genesis_fee"),
-          genesis_height: row.get("genesis_height"),
-          number: row.get("number"),
-          timestamp: row.get("timestamp")
-      })
-    .fetch_all(&pool).await.unwrap();
+  async fn get_inscriptions_within_block(pool: mysql::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
+    let mut conn = pool.get_conn().unwrap();
+    let inscriptions = conn.exec_map(
+      "SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=:block", 
+      params! {
+        "block" => block
+      },
+      |mut row: mysql::Row| InscriptionMetadataForBlock {
+        id: row.get("id").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(), 
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        number: row.get("number").unwrap(),
+        timestamp: row.get("timestamp").unwrap()
+      }
+    ).unwrap();
     inscriptions
   }
   
   //Deprecated DB functions
-  async fn get_ordinal_content_from_db(pool: sqlx::Pool<sqlx::MySql>, inscription_id: String) -> Content {
-    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE id=?")
-      .bind(inscription_id)
-      .map(|row| Content {
-          content: row.get("content"),
-          content_type: row.get("content_type")
-      })
-    .fetch_one(&pool).await.unwrap();
+  async fn get_ordinal_content_from_db(pool: mysql::Pool, inscription_id: String) -> Content {
+    let mut conn = pool.get_conn().unwrap();
+    let content: Content = conn.exec_map(
+      "SELECT content, content_type FROM ordinals WHERE id=:id LIMIT 1", 
+      params! {
+        "id" => inscription_id
+      },
+      |mut row: mysql::Row| Content {
+        content: row.get("content").unwrap(),
+        content_type: row.take("content_type").unwrap()
+      }
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
     content
   }
 
-  async fn get_ordinal_content_by_number_from_db(pool: sqlx::Pool<sqlx::MySql>, number: i64) -> Content {
-    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE number=?")
-      .bind(number)
-      .map(|row| Content {
-          content: row.get("content"),
-          content_type: row.get("content_type")
-      })
-    .fetch_one(&pool).await.unwrap();
+  async fn get_ordinal_content_by_number_from_db(pool: mysql::Pool, number: i64) -> Content {
+    let mut conn = pool.get_conn().unwrap();
+    let content: Content = conn.exec_map(
+      "SELECT content, content_type FROM ordinals WHERE number=:number LIMIT 1", 
+      params! {
+        "number" => number
+      },
+      |mut row: mysql::Row| Content {
+        content: row.get("content").unwrap(),
+        content_type: row.take("content_type").unwrap()
+      }
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
     content
   }
 
-  async fn get_ordinal_content_by_sha256_from_db(pool: sqlx::Pool<sqlx::MySql>, sha256: String) -> Content {
-    let content = sqlx::query("SELECT content, content_type FROM ordinals WHERE sha256=? LIMIT 1")
-      .bind(sha256)
-      .map(|row| Content {
-          content: row.get("content"),
-          content_type: row.get("content_type")
-      })
-    .fetch_one(&pool).await.unwrap();
+  async fn get_ordinal_content_by_sha256_from_db(pool: mysql::Pool, sha256: String) -> Content {
+    let mut conn = pool.get_conn().unwrap();
+    let content: Content = conn.exec_map(
+      "SELECT content, content_type FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
+      params! {
+        "sha256" => sha256
+      },
+      |mut row: mysql::Row| Content {
+        content: row.get("content").unwrap(),
+        content_type: row.take("content_type").unwrap()
+      }
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
     content
   }
 
