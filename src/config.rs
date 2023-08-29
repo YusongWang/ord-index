@@ -9,6 +9,7 @@ pub(crate) struct Config {
   pub(crate) db_connection_string: Option<String>,
   pub(crate) s3_bucket_name: Option<String>,
   pub(crate) s3_upload_start_number: Option<i64>,
+  pub(crate) s3_head_check: Option<bool>
 }
 
 impl Config {

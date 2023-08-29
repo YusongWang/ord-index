@@ -203,13 +203,14 @@ impl Vermilion {
       let s3client = s3::Client::new(&s3_config);
       let s3_bucket_name = config.s3_bucket_name.unwrap();
       let s3_upload_start_number = config.s3_upload_start_number.unwrap_or(0);
+      let s3_head_check = config.s3_head_check.unwrap_or(false);
       let n_threads = self.n_threads.unwrap_or(1).into();
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).unwrap();
       let start_number = Self::get_start_number(&pool).unwrap();      
-      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
+      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
       let initial = InscriptionNumberStatus {
         inscription_number: start_number,
         status: "UNKNOWN".to_string()
@@ -317,7 +318,7 @@ impl Vermilion {
             if number < s3_upload_start_number {
                 continue;
             }
-            Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription).await;	//TODO: Handle errors
+            Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription, s3_head_check).await;	//TODO: Handle errors
           }
           
           //4. Get ordinal metadata
@@ -443,36 +444,38 @@ impl Vermilion {
   }
 
   //Indexer Helper functions
-  pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription) {
+  pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
     let tmr = stimer!(Level::Info; "upload_ordinal_content");
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
-    let head_status = client	
-      .head_object()	
-      .bucket(bucket_name)	
-      .key(key.clone())	
-      .send()	
-      .await;
-    match head_status {	
-      Ok(head_status) => {	
-        log::info!("Ordinal content already exists in S3: {}", id.clone());	
-        return;	
-      }	
-      Err(error) => {	
-        if error.to_string() == "service error" {
-          let service_error = error.into_service_error();
-          if service_error.to_string() != "NotFound" {
-            println!("Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}", id.clone(), service_error, service_error.message(), service_error.code());	
-            return;	//error
+    if head_check {
+      let head_status = client	
+        .head_object()	
+        .bucket(bucket_name)	
+        .key(key.clone())	
+        .send()	
+        .await;
+      match head_status {	
+        Ok(head_status) => {	
+          log::info!("Ordinal content already exists in S3: {}", id.clone());	
+          return;	
+        }	
+        Err(error) => {	
+          if error.to_string() == "service error" {
+            let service_error = error.into_service_error();
+            if service_error.to_string() != "NotFound" {
+              println!("Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}", id.clone(), service_error, service_error.message(), service_error.code());	
+              return;	//error
+            } else {
+              log::debug!("Ordinal {} not found in S3, uploading", id.clone());
+            }
           } else {
-            log::debug!("Ordinal {} not found in S3, uploading", id.clone());
+            println!("Error checking if ordinal {} exists in S3: {} - {:?}", id.clone(), error, error.message());	
+            return; //error
           }
-        } else {
-          println!("Error checking if ordinal {} exists in S3: {} - {:?}", id.clone(), error, error.message());	
-          return; //error
         }
-      }
-    };
+      };
+    }
     
     let body = Inscription::body(&inscription);	
     let bytes = match body {	
@@ -715,7 +718,7 @@ impl Vermilion {
         }
       }
     };
-    println!("Inscription numbers in db fully populated up to: {:?}, removing any straggler entries after this point.", number);
+    println!("Inscription numbers in db fully populated up to: {:?}, removing any straggler entries after this point, and starting metadata upload from {:?}", number-1, number);
     let exec = conn.exec_iter(
       r"DELETE FROM ordinals WHERE number>:big_number;",
       params! { "big_number" => number
@@ -755,7 +758,7 @@ impl Vermilion {
         success_count = success_count + 1;
       }      
     }
-    println!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::debug!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();    
     if needed_length < 1000 {
@@ -783,6 +786,8 @@ impl Vermilion {
         }
       };
     }
+    //Remove successfully processed numbers from vector
+    status_vector.retain(|status| status.status != "SUCCESS");
     needed_inscription_numbers
   }
 
@@ -832,8 +837,10 @@ impl Vermilion {
       locking_total = locking_total + timing.locking;
       last_start = timing.acquire_permit_start;
     }
+    let count = relevant_timings.last().unwrap().inscription_end - relevant_timings.first().unwrap().inscription_start+1;
+    let total_time = relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start);
     println!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
-    println!("Total time: {:?}", relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start));
+    println!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
     println!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
     println!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
     println!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
