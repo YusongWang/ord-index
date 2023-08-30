@@ -17,7 +17,8 @@ use sha256::digest;
 use s3::operation::get_object::GetObjectOutput;
 use aws_sdk_s3 as s3;	
 use s3::primitives::ByteStream;	
-use s3::error::ProvideErrorMetadata;	
+use s3::error::ProvideErrorMetadata;
+
 
 use axum::{
   routing::get,
@@ -25,6 +26,8 @@ use axum::{
   Router,
   extract::{Path, State},
 };
+use logging_timer::{timer, time};
+
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
@@ -395,8 +398,9 @@ impl Vermilion {
         let url = config.db_connection_string.unwrap();
         let pool = Pool::new(url.as_str()).unwrap();
         let bucket_name = config.s3_bucket_name.unwrap();
-        let s3_config = aws_config::from_env().load().await;	
+        let s3_config = aws_config::from_env().load().await;
         let s3client = s3::Client::new(&s3_config);
+        
         let server_config = ApiServerConfig {
           pool: pool,
           s3client: s3client,
@@ -415,6 +419,10 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+          )
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
@@ -850,7 +858,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(server_config.s3client, &server_config.bucket_name, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+    let response = Self::get_ordinal_content(&server_config.s3client, &server_config.bucket_name, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
@@ -860,7 +868,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(server_config.s3client, &server_config.bucket_name, inscription_id.to_string()).await;
+    let response = Self::get_ordinal_content(&server_config.s3client, &server_config.bucket_name, inscription_id.to_string()).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
@@ -870,7 +878,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content_by_number(server_config.pool, server_config.s3client, &server_config.bucket_name, number).await;
+    let response = Self::get_ordinal_content_by_number(server_config.pool, &server_config.s3client, &server_config.bucket_name, number).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
@@ -880,7 +888,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content_by_sha256(server_config.pool, server_config.s3client, &server_config.bucket_name, sha256).await;
+    let response = Self::get_ordinal_content_by_sha256(server_config.pool, &server_config.s3client, &server_config.bucket_name, sha256).await;
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
@@ -890,7 +898,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await;
+    let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string());
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(metadata),
@@ -898,7 +906,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number).await;
+    let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number);
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(metadata),
@@ -906,7 +914,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
+    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string());
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -914,7 +922,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
+    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number);
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -922,7 +930,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
+    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256);
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -930,7 +938,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
+    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block);
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(inscriptions),
@@ -938,7 +946,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   //DB functions
-  async fn get_ordinal_content(client: s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
+  async fn get_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
+    let tmr1 = timer!(Level::Info; "get_ordinal_content");
     let key = format!("content/{}", inscription_id);
     let content = client
       .get_object()
@@ -950,8 +959,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: mysql::Pool, client: s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
-    let mut conn = pool.get_conn().unwrap();
+  async fn get_ordinal_content_by_number(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
+    let tmr1 = timer!(Level::Info; "get_ordinal_content_by_number");
+    let mut conn = Self::get_conn(pool);
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
@@ -961,19 +971,13 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     .unwrap()
     .unwrap();
 
-    let key = format!("content/{}", inscription_id);
-    let content = client
-      .get_object()
-      .bucket(bucket_name)
-      .key(key)
-      .send()
-      .await
-      .unwrap();
+    let content = Self::get_ordinal_content(client, bucket_name, inscription_id).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql::Pool, client: s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
-    let mut conn = pool.get_conn().unwrap();
+  async fn get_ordinal_content_by_sha256(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
+    let tmr1 = timer!(Level::Info; "get_ordinal_content_by_sha256");
+    let mut conn = Self::get_conn(pool);
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
       params! {
@@ -983,19 +987,13 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     .unwrap()
     .unwrap();
 
-    let key = format!("content/{}", inscription_id);
-    let content = client
-      .get_object()
-      .bucket(bucket_name)
-      .key(key)
-      .send()
-      .await
-      .unwrap();
+    let content = Self::get_ordinal_content(client, bucket_name, inscription_id).await;
     content
   }
 
-  async fn get_ordinal_metadata(pool: mysql::Pool, inscription_id: String) -> Metadata {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_ordinal_metadata(pool: mysql::Pool, inscription_id: String) -> Metadata {
+    let mut conn = Self::get_conn(pool);
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
@@ -1023,8 +1021,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
-  async fn get_ordinal_metadata_by_number(pool: mysql::Pool, number: i64) -> Metadata {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_ordinal_metadata_by_number(pool: mysql::Pool, number: i64) -> Metadata {
+    let mut conn = Self::get_conn(pool);
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
@@ -1052,8 +1051,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result    
   }
 
-  async fn get_matching_inscriptions(pool: mysql::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_matching_inscriptions(pool: mysql::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool);
     let editions = conn.exec_map(
       "with a as (select sha256 from ordinals where id = :id) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
       params! {
@@ -1068,8 +1068,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_matching_inscriptions_by_number(pool: mysql::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_matching_inscriptions_by_number(pool: mysql::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool);
     let editions = conn.exec_map(
       "with a as (select sha256 from ordinals where number = :number) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
       params! {
@@ -1084,8 +1085,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: mysql::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_matching_inscriptions_by_sha256(pool: mysql::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool);
     let editions = conn.exec_map(
       "select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals where sha256=:sha256;", 
       params! {
@@ -1100,8 +1102,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_inscriptions_within_block(pool: mysql::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
-    let mut conn = pool.get_conn().unwrap();
+  #[time("info")]
+  fn get_inscriptions_within_block(pool: mysql::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
+    let mut conn = Self::get_conn(pool);
     let inscriptions = conn.exec_map(
       "SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=:block", 
       params! {
@@ -1120,6 +1123,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     inscriptions
   }
   
+  #[time("info")]
+  fn get_conn(pool: mysql::Pool) -> mysql::PooledConn {
+    let conn = pool.get_conn().unwrap();
+    conn
+  }
+
   //Deprecated DB functions
   async fn get_ordinal_content_from_db(pool: mysql::Pool, inscription_id: String) -> Content {
     let mut conn = pool.get_conn().unwrap();
