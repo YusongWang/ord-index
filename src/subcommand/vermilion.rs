@@ -22,7 +22,8 @@ use axum::{
   Json, 
   Router,
   extract::{Path, State},
-  body::{Body, BoxBody}
+  body::{Body, BoxBody},
+  middleware::map_response
 };
 
 use tower_http::trace::TraceLayer;
@@ -423,6 +424,7 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
               .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
@@ -840,6 +842,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
     )
+  }
+
+  async fn set_header<B>(mut response: Response<B>) -> Response<B> {
+    response.headers_mut().insert("cache-control", "public, max-age=31536000, immutable".parse().unwrap());
+    response
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
