@@ -57,12 +57,14 @@ tempfile = "3.2.0"
 tokio = { version = "1.17.0", features = ["rt-multi-thread"] }
 tokio-stream = "0.1.9"
 tokio-util = {version = "0.7.3", features = ["compat"] }
-tower-http = { version = "0.4.0", features = ["compression-br", "compression-gzip", "cors", "set-header"] }
+tower-http = { version = "0.4.0", features = ["compression-br", "compression-gzip", "cors", "set-header", "trace"] }
 aws-config = "0.56.0"
 aws-sdk-s3 = "0.29.0"
 mysql = "*"
 sha256 = "1.2.2"
 logging_timer = "1.1.0"
+tower = "0.4.13"
+tracing = "0.1.37"
 
 [dev-dependencies]
 executable-path = "1.0.0"

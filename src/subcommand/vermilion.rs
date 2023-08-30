@@ -1,8 +1,8 @@
 use super::*;
 use axum_server::Handle;
 use log::Level;
-use logging_timer::stimer;
 use mysql::TxOpts;
+use tower_http::trace::DefaultOnRequest;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -26,7 +26,10 @@ use axum::{
   Router,
   extract::{Path, State},
 };
-use logging_timer::{timer, time};
+use logging_timer::{timer, time, stimer, stime};
+use tower_http::trace::TraceLayer;
+use tower_http::trace::DefaultOnResponse;
+use tracing::Level as TraceLevel;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -393,6 +396,7 @@ impl Vermilion {
     let api_server_options_clone = options.clone();
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
+      println!("Tokio rt: {:?}", rt);
       rt.block_on(async move {
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
@@ -419,6 +423,15 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .layer(
+            TraceLayer::new_for_http()
+              .on_request(
+                DefaultOnRequest::new().level(TraceLevel::INFO)
+              )
+              .on_response(
+                DefaultOnResponse::new().level(TraceLevel::INFO)
+              )
+          )
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
@@ -1017,7 +1030,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
-  #[time("info")]
+  #[stime("info")]
   fn get_ordinal_metadata_by_number(pool: mysql::Pool, number: i64) -> Metadata {
     let mut conn = Self::get_conn(pool);
     let result = conn.exec_map(
@@ -1064,7 +1077,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  #[time("info")]
+  #[stime("info")]
   fn get_matching_inscriptions_by_number(pool: mysql::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool);
     let editions = conn.exec_map(

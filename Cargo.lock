@@ -3074,7 +3074,9 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.8",
+ "tower",
  "tower-http",
+ "tracing",
  "unindent",
 ]
 
@@ -4518,6 +4520,7 @@ dependencies = [
  "tokio-util 0.7.8",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
