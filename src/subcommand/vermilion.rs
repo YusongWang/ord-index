@@ -433,7 +433,7 @@ impl Vermilion {
 
   //Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
-    let _tmr = stimer!(Level::Info; "upload_ordinal_content");
+    let _tmr = stimer!(Level::Debug; "upload_ordinal_content");
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
     if head_check {
@@ -445,7 +445,7 @@ impl Vermilion {
         .await;
       match head_status {	
         Ok(_) => {	
-          log::info!("Ordinal content already exists in S3: {}", id.clone());	
+          log::debug!("Ordinal content already exists in S3: {}", id.clone());	
           return;	
         }	
         Err(error) => {	
@@ -455,7 +455,7 @@ impl Vermilion {
               println!("Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}", id.clone(), service_error, service_error.message(), service_error.code());	
               return;	//error
             } else {
-              log::debug!("Ordinal {} not found in S3, uploading", id.clone());
+              log::trace!("Ordinal {} not found in S3, uploading", id.clone());
             }
           } else {
             println!("Error checking if ordinal {} exists in S3: {} - {:?}", id.clone(), error, error.message());	
@@ -491,7 +491,7 @@ impl Vermilion {
 
     let _ret = match put_status {	
       Ok(put_status) => {	
-        log::info!("Uploaded ordinal content to S3: {}", id.clone());	
+        log::debug!("Uploaded ordinal content to S3: {}", id.clone());	
         put_status	
       }	
       Err(error) => {	
@@ -943,7 +943,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   //DB functions
   async fn get_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
-    let tmr1 = timer!(Level::Info; "get_ordinal_content");
+    let _tmr = timer!(Level::Info; "get_ordinal_content");
     let key = format!("content/{}", inscription_id);
     let content = client
       .get_object()
@@ -956,7 +956,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_content_by_number(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
-    let tmr1 = timer!(Level::Info; "get_ordinal_content_by_number");
+    let _tmr = timer!(Level::Info; "get_ordinal_content_by_number");
     let mut conn = Self::get_conn(pool);
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE number=:number LIMIT 1", 
@@ -972,7 +972,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_content_by_sha256(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
-    let tmr1 = timer!(Level::Info; "get_ordinal_content_by_sha256");
+    let _tmr = timer!(Level::Info; "get_ordinal_content_by_sha256");
     let mut conn = Self::get_conn(pool);
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
