@@ -1,14 +1,12 @@
 use super::*;
 use axum_server::Handle;
-use log::Level;
-use mysql::TxOpts;
-use tower_http::trace::DefaultOnRequest;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
-use mysql::Pool;
-use mysql::prelude::Queryable;
-use mysql::params;
+use mysql_async::TxOpts;
+use mysql_async::Pool;
+use mysql_async::prelude::Queryable;
+use mysql_async::params;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use serde::Serialize;
@@ -19,16 +17,18 @@ use aws_sdk_s3 as s3;
 use s3::primitives::ByteStream;	
 use s3::error::ProvideErrorMetadata;
 
-
 use axum::{
   routing::get,
   Json, 
   Router,
   extract::{Path, State},
+  body::{Body, BoxBody}
 };
-use logging_timer::{timer, time, stimer, stime};
+
 use tower_http::trace::TraceLayer;
-use tower_http::trace::DefaultOnResponse;
+use tower_http::trace::DefaultMakeSpan;
+use tracing::Span;
+use http::{Request, Response};
 use tracing::Level as TraceLevel;
 
 use std::collections::BTreeSet;
@@ -151,7 +151,7 @@ pub struct IndexerTimings {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  pool: mysql::Pool,
+  pool: mysql_async::Pool,
   s3client: s3::Client,
   bucket_name: String
 }
@@ -196,7 +196,7 @@ impl Vermilion {
       println!("Index acquired");
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
-      let pool = Pool::new(url.as_str())?;
+      let pool = Pool::new(url.as_str());
       let s3_config = aws_config::from_env().load().await;
       let s3client = s3::Client::new(&s3_config);
       let s3_bucket_name = config.s3_bucket_name.unwrap();
@@ -206,8 +206,8 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
-      Self::create_metadata_table(&pool).unwrap();
-      let start_number = Self::get_start_number(&pool).unwrap();      
+      Self::create_metadata_table(&pool).await.unwrap();
+      let start_number = Self::get_start_number(&pool).await.unwrap();      
       println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
       let initial = InscriptionNumberStatus {
         inscription_number: start_number,
@@ -336,7 +336,7 @@ impl Vermilion {
           }
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec);
+          let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec).await;
           //4.2 Update status
           let t52 = Instant::now();
           if insert_result.is_err() {
@@ -400,7 +400,7 @@ impl Vermilion {
       rt.block_on(async move {
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
-        let pool = Pool::new(url.as_str()).unwrap();
+        let pool = mysql_async::Pool::new(url.as_str());
         let bucket_name = config.s3_bucket_name.unwrap();
         let s3_config = aws_config::from_env().load().await;
         let s3client = s3::Client::new(&s3_config);
@@ -425,12 +425,13 @@ impl Vermilion {
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .layer(
             TraceLayer::new_for_http()
-              .on_request(
-                DefaultOnRequest::new().level(TraceLevel::INFO)
-              )
-              .on_response(
-                DefaultOnResponse::new().level(TraceLevel::INFO)
-              )
+              .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
+              .on_request(|req: &Request<Body>, _span: &Span| {
+                tracing::event!(TraceLevel::INFO, "Started processing request {}", req.uri().path());
+              })
+              .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
+                tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
+              })
           )
           .with_state(server_config);
 
@@ -446,7 +447,6 @@ impl Vermilion {
 
   //Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
-    let _tmr = stimer!(Level::Debug; "upload_ordinal_content");
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
     if head_check {
@@ -589,8 +589,8 @@ impl Vermilion {
     Ok(metadata)
   }
 
-  pub(crate) fn create_metadata_table(pool: &mysql::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn()?;
+  pub(crate) async fn create_metadata_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
@@ -612,51 +612,13 @@ impl Vermilion {
           INDEX index_number (number),
           INDEX index_block (genesis_height),
           INDEX index_sha256 (sha256)
-      )")?;
+      )").await.unwrap();
     Ok(())
   }
 
-  pub(crate) fn insert_metadata(pool: &mysql::Pool, metadata: Metadata) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let t0 = Instant::now();
-    let mut conn = pool.get_conn().unwrap();
-    let t1 = Instant::now();
-    let exec = conn.exec_iter(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
-      params! { "id" => metadata.id,
-                "content_length" => metadata.content_length,
-                "content_type" => metadata.content_type,
-                "genesis_fee" => metadata.genesis_fee,
-                "genesis_height" => metadata.genesis_height,
-                "genesis_transaction" => metadata.genesis_transaction,
-                "location" => metadata.location,
-                "number" => metadata.number,
-                "offset" => metadata.offset,
-                "output_transaction" => metadata.output_transaction,
-                "sat" => metadata.sat,
-                "timestamp" => metadata.timestamp,
-                "sha256" => metadata.sha256,
-                "text" => metadata.text,
-                "is_json" => metadata.is_json
-      }
-    );
-    let t2 = Instant::now();
-    if t1.duration_since(t0) > Duration::from_millis(1) {
-      println!("Acquire: {:?} Insert: {:?}", t1.duration_since(t0), t2.duration_since(t1));
-    }
-    
-    match exec {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        println!("Error inserting ordinal metadata: {}", error);
-        Err(Box::new(error))
-      }
-    }
-  }
-
-  pub(crate) fn bulk_insert_metadata(pool: &mysql::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().unwrap();
-    let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+  pub(crate) async fn bulk_insert_metadata(pool: &mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
         VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
@@ -677,8 +639,8 @@ impl Vermilion {
           "text" => &metadata.text,
           "is_json" => &metadata.is_json
       })
-    );
-    let result = tx.commit();
+    ).await;
+    let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
@@ -688,14 +650,16 @@ impl Vermilion {
     }
   }
 
-  pub(crate) fn get_start_number(pool: &mysql::Pool) -> Result<i64, Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn()?;
+  pub(crate) async fn get_start_number(pool: &mysql_async::Pool) -> Result<i64, Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
     let row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
+      .await
       .unwrap()
       .next()
+      .await
       .unwrap()
       .unwrap();
-    let row = mysql::from_row::<Option<i64>>(row);
+    let row = mysql_async::from_row::<Option<i64>>(row);
     let number = match row {
       Some(row) => {
         let number: i64 = row;
@@ -703,11 +667,13 @@ impl Vermilion {
       },
       None => {
         let row = conn.query_iter("select max(number) from ordinals")
+          .await
           .unwrap()
           .next()
+          .await
           .unwrap()
           .unwrap();
-        let max = mysql::from_row::<Option<i64>>(row);
+        let max = mysql_async::from_row::<Option<i64>>(row);
         match max {
           Some(max) => {
             let number: i64 = max;
@@ -724,7 +690,7 @@ impl Vermilion {
       r"DELETE FROM ordinals WHERE number>:big_number;",
       params! { "big_number" => number
       }
-    )?;
+    ).await.unwrap();
 
     Ok(number)
   }
@@ -907,7 +873,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string());
+    let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(metadata),
@@ -915,7 +881,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number);
+    let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(metadata),
@@ -923,7 +889,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string());
+    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -931,7 +897,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number);
+    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -939,7 +905,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256);
+    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(editions),
@@ -947,7 +913,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block);
+    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
     (
         ([(axum::http::header::CONTENT_TYPE, "application/json")]),
         Json(inscriptions),
@@ -956,7 +922,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   //DB functions
   async fn get_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
-    let _tmr = timer!(Level::Info; "get_ordinal_content");
     let key = format!("content/{}", inscription_id);
     let content = client
       .get_object()
@@ -968,15 +933,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
-    let _tmr = timer!(Level::Info; "get_ordinal_content_by_number");
-    let mut conn = Self::get_conn(pool);
+  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, client: &s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
+    let mut conn = Self::get_conn(pool).await;
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       }
     )
+    .await
     .unwrap()
     .unwrap();
 
@@ -984,15 +949,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql::Pool, client: &s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
-    let _tmr = timer!(Level::Info; "get_ordinal_content_by_sha256");
-    let mut conn = Self::get_conn(pool);
+  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, client: &s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
+    let mut conn = Self::get_conn(pool).await;
     let inscription_id: String = conn.exec_first(
       "SELECT id FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
       params! {
         "sha256" => sha256
       }
     )
+    .await
     .unwrap()
     .unwrap();
 
@@ -1000,15 +965,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  #[time("info")]
-  fn get_ordinal_metadata(pool: mysql::Pool, inscription_id: String) -> Metadata {
-    let mut conn = Self::get_conn(pool);
+  async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
+    let mut conn = Self::get_conn(pool).await;
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
         "id" => inscription_id
       },
-      |mut row: mysql::Row| Metadata {
+      |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
         content_type: row.take("content_type").unwrap(), 
@@ -1026,19 +990,18 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap()
       }
     );
-    let result = result.unwrap().pop().unwrap();
+    let result = result.await.unwrap().pop().unwrap();
     result
   }
 
-  #[stime("info")]
-  fn get_ordinal_metadata_by_number(pool: mysql::Pool, number: i64) -> Metadata {
-    let mut conn = Self::get_conn(pool);
+  async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> Metadata {
+    let mut conn = Self::get_conn(pool).await;
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       },
-      |mut row: mysql::Row| Metadata {
+      |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
         content_type: row.take("content_type").unwrap(), 
@@ -1056,70 +1019,66 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap()
       }
     );
-    let result = result.unwrap().pop().unwrap();
+    let result = result.await.unwrap().pop().unwrap();
     result    
   }
 
-  #[time("info")]
-  fn get_matching_inscriptions(pool: mysql::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool);
+  async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
       "with a as (select sha256 from ordinals where id = :id) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
       params! {
         "id" => inscription_id
       },
-      |row: mysql::Row| InscriptionNumberEdition {
+      |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
         edition: row.get("edition").unwrap()
       }
-    ).unwrap();
+    ).await.unwrap();
     editions
   }
 
-  #[stime("info")]
-  fn get_matching_inscriptions_by_number(pool: mysql::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool);
+  async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
       "with a as (select sha256 from ordinals where number = :number) select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals,a where ordinals.sha256=a.sha256;", 
       params! {
         "number" => number
       },
-      |row: mysql::Row| InscriptionNumberEdition {
+      |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
         edition: row.get("edition").unwrap()
       }
-    ).unwrap();
+    ).await.unwrap();
     editions
   }
 
-  #[time("info")]
-  fn get_matching_inscriptions_by_sha256(pool: mysql::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool);
+  async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
+    let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
       "select id, number, row_number() OVER(ORDER BY number asc) as edition from ordinals where sha256=:sha256;", 
       params! {
         "sha256" => sha256
       },
-      |row: mysql::Row| InscriptionNumberEdition {
+      |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
         edition: row.get("edition").unwrap()
       }
-    ).unwrap();
+    ).await.unwrap();
     editions
   }
 
-  #[time("info")]
-  fn get_inscriptions_within_block(pool: mysql::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
-    let mut conn = Self::get_conn(pool);
+  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
+    let mut conn = Self::get_conn(pool).await;
     let inscriptions = conn.exec_map(
       "SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=:block", 
       params! {
         "block" => block
       },
-      |mut row: mysql::Row| InscriptionMetadataForBlock {
+      |mut row: mysql_async::Row| InscriptionMetadataForBlock {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
         content_type: row.take("content_type").unwrap(), 
@@ -1128,65 +1087,67 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         number: row.get("number").unwrap(),
         timestamp: row.get("timestamp").unwrap()
       }
-    ).unwrap();
+    ).await.unwrap();
     inscriptions
   }
   
-  #[time("info")]
-  fn get_conn(pool: mysql::Pool) -> mysql::PooledConn {
-    let conn = pool.get_conn().unwrap();
+  async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
+    let conn: mysql_async::Conn = pool.get_conn().await.unwrap();
     conn
   }
 
   //Deprecated DB functions
-  async fn get_ordinal_content_from_db(pool: mysql::Pool, inscription_id: String) -> Content {
-    let mut conn = pool.get_conn().unwrap();
+  async fn get_ordinal_content_from_db(pool: mysql_async::Pool, inscription_id: String) -> Content {
+    let mut conn = Self::get_conn(pool).await;
     let content: Content = conn.exec_map(
       "SELECT content, content_type FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
         "id" => inscription_id
       },
-      |mut row: mysql::Row| Content {
+      |mut row: mysql_async::Row| Content {
         content: row.get("content").unwrap(),
         content_type: row.take("content_type").unwrap()
       }
     )
+    .await
     .unwrap()
     .pop()
     .unwrap();
     content
   }
 
-  async fn get_ordinal_content_by_number_from_db(pool: mysql::Pool, number: i64) -> Content {
-    let mut conn = pool.get_conn().unwrap();
+  async fn get_ordinal_content_by_number_from_db(pool: mysql_async::Pool, number: i64) -> Content {
+    let mut conn = Self::get_conn(pool).await;
     let content: Content = conn.exec_map(
       "SELECT content, content_type FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       },
-      |mut row: mysql::Row| Content {
+      |mut row: mysql_async::Row| Content {
         content: row.get("content").unwrap(),
         content_type: row.take("content_type").unwrap()
       }
     )
+    .await
     .unwrap()
     .pop()
     .unwrap();
     content
   }
 
-  async fn get_ordinal_content_by_sha256_from_db(pool: mysql::Pool, sha256: String) -> Content {
-    let mut conn = pool.get_conn().unwrap();
+  async fn get_ordinal_content_by_sha256_from_db(pool: mysql_async::Pool, sha256: String) -> Content {
+    let mut conn = Self::get_conn(pool).await;
     let content: Content = conn.exec_map(
       "SELECT content, content_type FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
       params! {
         "sha256" => sha256
       },
-      |mut row: mysql::Row| Content {
+      |mut row: mysql_async::Row| Content {
         content: row.get("content").unwrap(),
         content_type: row.take("content_type").unwrap()
       }
     )
+    .await
     .unwrap()
     .pop()
     .unwrap();
