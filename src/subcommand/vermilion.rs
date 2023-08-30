@@ -419,10 +419,6 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
-          .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-          )
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
