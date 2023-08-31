@@ -1035,7 +1035,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
-      "select id, number, editions from ordinals where id = :id",
+      "with a as (select sha256 from editions where id = :id) select id, number, edition from editions,a where editions.sha256=a.sha256;",
       params! {
         "id" => inscription_id
       },
@@ -1051,7 +1051,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
-      "select id, number, edition from editions where number = :number", 
+      "with a as (select sha256 from editions where number = :number) select id, number, edition from editions,a where editions.sha256=a.sha256;", 
       params! {
         "number" => number
       },
@@ -1113,12 +1113,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       r#"CREATE PROCEDURE update_editions()
       BEGIN
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
-      CREATE TABLE editions as select id, number, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, sha256 from ordinals;
+      CREATE TABLE editions as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
       CREATE INDEX idx_id ON editions (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
       ELSE
-      CREATE TABLE editions_new as select id, number, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, sha256 from ordinals;
+      CREATE TABLE editions_new as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
