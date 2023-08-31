@@ -79,6 +79,8 @@ pub(crate) struct Vermilion {
     help = "Number of threads to use when uploading content and metadata. [default: 1]."
   )]
   n_threads: Option<u16>,
+  #[clap(long, help = "Only run api server, do not run indexer. [default: false].")]
+  run_api_server_only: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -159,6 +161,19 @@ pub struct ApiServerConfig {
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> SubcommandResult {
+    if self.run_api_server_only {
+      // hacky code to keep the process alive
+      let rt = Runtime::new().unwrap();
+      rt.block_on(async {
+        loop {            
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            break;
+          }
+          tokio::time::sleep(Duration::from_secs(10)).await;
+        }          
+      });
+      return Ok(Box::new(Empty {}) as Box<dyn Output>);
+    }
     println!("Ordinals Indexer Starting");
     //1. Normal Server
     let server = server::Server {
@@ -385,9 +400,9 @@ impl Vermilion {
             println!("Sleeping for 60s");
             tokio::time::sleep(Duration::from_secs(60)).await;
           }
-        });
+        });        
         
-      }
+      }      
       Ok(Box::new(Empty {}) as Box<dyn Output>)
     })
   }
@@ -397,7 +412,6 @@ impl Vermilion {
     let api_server_options_clone = options.clone();
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
-      println!("Tokio rt: {:?}", rt);
       rt.block_on(async move {
         let config = api_server_options_clone.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
