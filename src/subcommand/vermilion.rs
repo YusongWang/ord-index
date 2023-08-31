@@ -80,7 +80,7 @@ pub(crate) struct Vermilion {
   )]
   n_threads: Option<u16>,
   #[clap(long, help = "Only run api server, do not run indexer. [default: false].")]
-  run_api_server_only: bool
+  pub run_api_server_only: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -161,21 +161,8 @@ pub struct ApiServerConfig {
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> SubcommandResult {
-    if self.run_api_server_only {
-      // hacky code to keep the process alive
-      let rt = Runtime::new().unwrap();
-      rt.block_on(async {
-        loop {            
-          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-            break;
-          }
-          tokio::time::sleep(Duration::from_secs(10)).await;
-        }          
-      });
-      return Ok(Box::new(Empty {}) as Box<dyn Output>);
-    }
     println!("Ordinals Indexer Starting");
-    //1. Normal Server
+    //1. Ordinals Server
     let server = server::Server {
       address: self.address,
       acme_domain: self.acme_domain,
@@ -193,10 +180,10 @@ impl Vermilion {
       let server_result = server.run(server_options_clone, server_index_clone, handle);
       match server_result {
         Ok(_) => {
-          println!("Default server stopped");
+          println!("Ordinals server stopped");
         },
         Err(err) => {
-          println!("Default server failed to start: {:?}", err);
+          println!("Ordinals server failed to start: {:?}", err);
         }
       }
     });
@@ -419,6 +406,7 @@ impl Vermilion {
         let bucket_name = config.s3_bucket_name.unwrap();
         let s3_config = aws_config::from_env().load().await;
         let s3client = s3::Client::new(&s3_config);
+        Self::create_edition_proc(pool.clone()).await.unwrap();
         
         let server_config = ApiServerConfig {
           pool: pool,
@@ -1115,6 +1103,39 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
     let conn: mysql_async::Conn = pool.get_conn().await.unwrap();
     conn
+  }
+
+  async fn create_edition_proc(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await.unwrap();
+    tx.query_drop(r"SELECT table_name FROM information_schema.tables").await.unwrap();
+    tx.query_drop(
+r#"CREATE PROCEDURE update_editions()
+BEGIN
+IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
+CREATE TABLE editions as select id, number, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, sha256 from ordinals;
+CREATE INDEX idx_id ON editions (id);
+CREATE INDEX idx_number ON editions (number);
+CREATE INDEX idx_sha256 ON editions (sha256);
+ELSE
+CREATE TABLE editions_new as select id, number, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, sha256 from ordinals;
+CREATE INDEX idx_id ON editions_new (id);
+CREATE INDEX idx_number ON editions_new (number);
+CREATE INDEX idx_sha256 ON editions_new (sha256);
+RENAME TABLE editions to editions_old, editions_new to editions;
+DROP TABLE IF EXISTS editions_old;
+END IF;
+END;"#).await.unwrap();
+    tx.query_drop(r"DELIMITER ;").await.unwrap();
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error creating editions table stored procedure: {}", error);
+        Err(Box::new(error))
+      }
+    }
   }
 
   //Deprecated DB functions
