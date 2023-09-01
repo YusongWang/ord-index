@@ -667,6 +667,11 @@ impl Vermilion {
     let number = match row {
       Some(row) => {
         let number: i64 = row;
+        let _exec = conn.exec_iter(
+          r"DELETE FROM ordinals WHERE number>:big_number;",
+          params! { "big_number" => number
+          }
+        ).await.unwrap();
         number+1
       },
       None => {
@@ -689,12 +694,7 @@ impl Vermilion {
         }
       }
     };
-    println!("Inscription numbers in db fully populated up to: {:?}, removing any straggler entries after this point, and starting metadata upload from {:?}", number-1, number);
-    let _exec = conn.exec_iter(
-      r"DELETE FROM ordinals WHERE number>:big_number;",
-      params! { "big_number" => number
-      }
-    ).await.unwrap();
+    println!("Inscription numbers in db fully populated up to: {:?}, removed any straggler entries after this point, and starting metadata upload from {:?}", number-1, number);
 
     Ok(number)
   }
@@ -729,7 +729,7 @@ impl Vermilion {
         success_count = success_count + 1;
       }      
     }
-    log::debug!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();    
     if needed_length < 1000 {
@@ -1127,7 +1127,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       END IF;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT editions_event ON SCHEDULE EVERY 2 HOUR DO CALL update_editions()").await.unwrap();
+    tx.query_drop(r"CREATE EVENT editions_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) DO CALL update_editions()").await.unwrap();
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
