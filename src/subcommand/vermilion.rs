@@ -1118,6 +1118,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
       ELSE
+      DROP TABLE IF EXISTS editions_new;
       CREATE TABLE editions_new as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
