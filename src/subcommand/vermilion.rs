@@ -726,7 +726,7 @@ impl Vermilion {
         success_count = success_count + 1;
       }
     }
-    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::debug!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();    
     if needed_length < 1000 {
