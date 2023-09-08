@@ -354,7 +354,9 @@ impl Vermilion {
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
-              status.status = "SUCCESS".to_string();
+              if status.status != "NOT_FOUND".to_string() {
+                status.status = "SUCCESS".to_string();
+              }              
             }
           }
           
@@ -624,7 +626,7 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
+      r"INSERT IGNORE INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
         VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
@@ -667,11 +669,6 @@ impl Vermilion {
     let number = match row {
       Some(row) => {
         let number: i64 = row;
-        let _exec = conn.exec_iter(
-          r"DELETE FROM ordinals WHERE number>:big_number;",
-          params! { "big_number" => number
-          }
-        ).await.unwrap();
         number+1
       },
       None => {
@@ -694,7 +691,7 @@ impl Vermilion {
         }
       }
     };
-    println!("Inscription numbers in db fully populated up to: {:?}, removed any straggler entries after this point, and starting metadata upload from {:?}", number-1, number);
+    println!("Inscription numbers in db fully populated up to: {:?}, starting metadata upload from {:?}", number-1, number);
 
     Ok(number)
   }
@@ -727,7 +724,7 @@ impl Vermilion {
       }
       if status.status == "SUCCESS" {
         success_count = success_count + 1;
-      }      
+      }
     }
     log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
