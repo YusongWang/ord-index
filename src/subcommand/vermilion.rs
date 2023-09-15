@@ -211,6 +211,7 @@ impl Vermilion {
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).await.unwrap();      
       Self::create_edition_procedure(pool.clone()).await.unwrap();
+      Self::create_weights_procedure(pool.clone()).await.unwrap();
       let start_number = Self::get_start_number(&pool).await.unwrap();      
       println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
       let initial = InscriptionNumberStatus {
@@ -1097,6 +1098,10 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     inscriptions
   }
   
+  async fn get_random_inscription(pool: mysql_async::Pool) {
+    let mut conn = Self::get_conn(pool).await;
+  }
+
   async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
     let conn: mysql_async::Conn = pool.get_conn().await.unwrap();
     conn
@@ -1131,6 +1136,60 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error creating editions table stored procedure: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  async fn create_weights_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await.unwrap();
+    tx.query_drop(
+      r#"CREATE PROCEDURE update_weights()
+      BEGIN
+      IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
+      CREATE TABLE weights as
+      select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-(1-sqrt(a.count)/a.count)*(a.is_json)) as weight from (
+          select sha256, 
+                 min(number) as first_number, 
+                 sum(genesis_fee) as total_fee, 
+                 max(content_length) as content_length, 
+                 count(*) as count, 
+                 max(is_json) as is_json
+          from ordinals group by sha256
+        ) a
+      ) b;
+      CREATE INDEX idx_band_start ON weights (band_start);
+      CREATE INDEX idx_band_end ON weights (band_end);
+      ELSE
+      DROP TABLE IF EXISTS weights_new;
+      CREATE TABLE weights_new as
+      select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-(1-sqrt(a.count)/a.count)*(a.is_json)) as weight from (
+          select sha256, 
+                 min(number) as first_number, 
+                 sum(genesis_fee) as total_fee, 
+                 max(content_length) as content_length, 
+                 count(*) as count, 
+                 max(is_json) as is_json
+          from ordinals group by sha256
+        ) a
+      ) b;
+      CREATE INDEX idx_band_start ON weights_new (band_start);
+      CREATE INDEX idx_band_end ON weights_new (band_end);
+      RENAME TABLE weights to weights_old, weights_new to weights;
+      DROP TABLE IF EXISTS weights_old;
+      END IF;
+      END;"#).await.unwrap();
+    tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
+    tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 + 43200) DO CALL update_weights()").await.unwrap();
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error creating weights table stored procedure: {}", error);
         Err(Box::new(error))
       }
     }
