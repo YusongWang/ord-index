@@ -34,6 +34,10 @@ use tracing::Level as TraceLevel;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use rand::Rng;
+use rand::SeedableRng;
+
+
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -124,6 +128,11 @@ pub struct InscriptionMetadataForBlock {
   genesis_height: i64,
   number: i64,
   timestamp: i64
+}
+
+#[derive(Clone, Serialize)]
+pub struct RandomInscriptionNumber {
+  number: i64
 }
 
 pub struct InscriptionNumberStatus {
@@ -429,6 +438,7 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .route("/random_inscription", get(Self::random_inscription))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -845,7 +855,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn set_header<B>(mut response: Response<B>) -> Response<B> {
-    response.headers_mut().insert("cache-control", "public, max-age=31536000, immutable".parse().unwrap());
+    //response.headers_mut().insert("cache-control", "public, max-age=31536000, immutable".parse().unwrap());
     response
   }
 
@@ -854,8 +864,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
-        ([(axum::http::header::CONTENT_TYPE, content_type)]),
-        bytes,
+      ([(axum::http::header::CONTENT_TYPE, content_type),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      bytes,
     )
   }
 
@@ -864,8 +875,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
-        ([(axum::http::header::CONTENT_TYPE, content_type)]),
-        bytes,
+      ([(axum::http::header::CONTENT_TYPE, content_type),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      bytes,
     )
   }
 
@@ -874,56 +886,68 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let bytes = response.body.collect().await.unwrap().to_vec();
     let content_type = response.content_type.unwrap();
     (
-        ([(axum::http::header::CONTENT_TYPE, content_type)]),
-        bytes,
+      ([(axum::http::header::CONTENT_TYPE, content_type),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      bytes,
     )
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(metadata),
+      ([(axum::http::header::CONTENT_TYPE, "application/json"),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      Json(metadata),
     )
   }
 
   async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(metadata),
+      ([(axum::http::header::CONTENT_TYPE, "application/json"),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      Json(metadata),
     )
   }
 
   async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(editions),
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
     )
   }
 
   async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(editions),
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
     )
   }
 
   async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(editions),
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
     )
   }
 
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
     (
-        ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-        Json(inscriptions),
+      ([(axum::http::header::CONTENT_TYPE, "application/json"),
+      (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      Json(inscriptions),
+    )
+  }
+
+  async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscription_number = Self::get_random_inscription(server_config.pool).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscription_number),
     )
   }
 
@@ -1098,8 +1122,23 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     inscriptions
   }
   
-  async fn get_random_inscription(pool: mysql_async::Pool) {
+  async fn get_random_inscription(pool: mysql_async::Pool) -> RandomInscriptionNumber {
     let mut conn = Self::get_conn(pool).await;
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let random_float = rng.gen::<f64>();
+    let random_inscription_number: RandomInscriptionNumber = conn.exec_map(
+      "SELECT first_number FROM weights where band_end>:random_float limit 1;", 
+      params! {
+        "random_float" => random_float
+      },
+      |row: mysql_async::Row| RandomInscriptionNumber {
+        number: row.get("first_number").unwrap()
+      }
+    ).await
+    .unwrap()
+    .pop()
+    .unwrap();
+    random_inscription_number
   }
 
   async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
