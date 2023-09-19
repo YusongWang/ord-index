@@ -29,6 +29,7 @@ s3_upload_start_number: 0
 ## Make a HEAD request to s3 to check if inscription content exists before making a POST upload
 ## Useful if unsure what inscription numbers have been uploaded. HEAD requests are 8% the price of a POST, so can save money.
 s3_head_check: true
+
 ```
 
 `~/.aws/config:`
