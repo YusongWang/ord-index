@@ -42,7 +42,10 @@ fn get_sat_with_inscription_and_sat_index() {
   create_wallet(&rpc_server);
 
   let Inscribe { reveal, .. } = inscribe(&rpc_server);
-  let inscription_id = InscriptionId::from(reveal);
+  let inscription_id = InscriptionId {
+    txid: reveal,
+    index: 0,
+  };
 
   let response = TestServer::spawn_with_args(&rpc_server, &["--index-sats", "--enable-json-api"])
     .json_request(format!("/sat/{}", 50 * COIN_VALUE));
@@ -91,7 +94,10 @@ fn get_sat_with_inscription_on_common_sat_and_more_inscriptions() {
   .run_and_deserialize_output();
 
   rpc_server.mine_blocks(1);
-  let inscription_id = InscriptionId::from(reveal);
+  let inscription_id = InscriptionId {
+    txid: reveal,
+    index: 0,
+  };
 
   let response = TestServer::spawn_with_args(&rpc_server, &["--index-sats", "--enable-json-api"])
     .json_request(format!("/sat/{}", 3 * 50 * COIN_VALUE + 1));
@@ -128,7 +134,10 @@ fn get_inscription() {
   create_wallet(&rpc_server);
 
   let Inscribe { reveal, .. } = inscribe(&rpc_server);
-  let inscription_id = InscriptionId::from(reveal);
+  let inscription_id = InscriptionId {
+    txid: reveal,
+    index: 0,
+  };
 
   let response = TestServer::spawn_with_args(&rpc_server, &["--index-sats", "--enable-json-api"])
     .json_request(format!("/inscription/{}", inscription_id));
@@ -143,6 +152,8 @@ fn get_inscription() {
   pretty_assert_eq!(
     inscription_json,
     InscriptionJson {
+      parent: None,
+      children: Vec::new(),
       inscription_id,
       number: 0,
       genesis_height: 2,
@@ -175,8 +186,11 @@ fn create_210_inscriptions(
     rpc_server.mine_blocks(1);
 
     let txid = rpc_server.broadcast_tx(TransactionTemplate {
-      inputs: &[(i * 3 + 1, 0, 0), (i * 3 + 2, 0, 0), (i * 3 + 3, 0, 0)],
-      witness: witness.clone(),
+      inputs: &[
+        (i * 3 + 1, 0, 0, witness.clone()),
+        (i * 3 + 2, 0, 0, witness.clone()),
+        (i * 3 + 3, 0, 0, witness.clone()),
+      ],
       ..Default::default()
     });
 
@@ -194,7 +208,10 @@ fn create_210_inscriptions(
       .rpc_server(rpc_server)
       .run_and_deserialize_output();
     rpc_server.mine_blocks(1);
-    blessed_inscriptions.push(InscriptionId::from(reveal));
+    blessed_inscriptions.push(InscriptionId {
+      txid: reveal,
+      index: 0,
+    });
   }
 
   rpc_server.mine_blocks(1);
@@ -304,11 +321,17 @@ fn get_inscriptions_in_block() {
   create_wallet(&rpc_server);
   rpc_server.mine_blocks(10);
 
+  let envelope = envelope(&[b"ord", &[1], b"text/plain;charset=utf-8", &[], b"bar"]);
+
   let txid = rpc_server.broadcast_tx(TransactionTemplate {
-    inputs: &[(1, 0, 0), (2, 0, 0), (3, 0, 0)],
-    witness: envelope(&[b"ord", &[1], b"text/plain;charset=utf-8", &[], b"bar"]),
+    inputs: &[
+      (1, 0, 0, envelope.clone()),
+      (2, 0, 0, envelope.clone()),
+      (3, 0, 0, envelope.clone()),
+    ],
     ..Default::default()
   });
+
   rpc_server.mine_blocks(1);
 
   for _ in 0..10 {
@@ -350,9 +373,14 @@ fn get_output() {
   create_wallet(&rpc_server);
   rpc_server.mine_blocks(3);
 
+  let envelope = envelope(&[b"ord", &[1], b"text/plain;charset=utf-8", &[], b"bar"]);
+
   let txid = rpc_server.broadcast_tx(TransactionTemplate {
-    inputs: &[(1, 0, 0), (2, 0, 0), (3, 0, 0)],
-    witness: envelope(&[b"ord", &[1], b"text/plain;charset=utf-8", &[], b"bar"]),
+    inputs: &[
+      (1, 0, 0, envelope.clone()),
+      (2, 0, 0, envelope.clone()),
+      (3, 0, 0, envelope.clone()),
+    ],
     ..Default::default()
   });
   rpc_server.mine_blocks(1);

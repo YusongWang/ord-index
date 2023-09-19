@@ -273,7 +273,7 @@ impl<'index> Updater<'_> {
           // There's no try_iter on tokio::sync::mpsc::Receiver like std::sync::mpsc::Receiver.
           // So we just loop until BATCH_SIZE doing try_recv until it returns None.
           let mut outpoints = vec![outpoint];
-          for _ in 0..BATCH_SIZE-1 {
+          for _ in 0..BATCH_SIZE - 1 {
             let Ok(outpoint) = outpoint_receiver.try_recv() else {
               break;
             };
@@ -297,7 +297,10 @@ impl<'index> Updater<'_> {
           };
           // Send all tx output values back in order
           for (i, tx) in txs.iter().flatten().enumerate() {
-            let Ok(_) = value_sender.send(tx.output[usize::try_from(outpoints[i].vout).unwrap()].value).await else {
+            let Ok(_) = value_sender
+              .send(tx.output[usize::try_from(outpoints[i].vout).unwrap()].value)
+              .await
+            else {
               log::error!("Value channel closed unexpectedly");
               return;
             };
@@ -376,6 +379,8 @@ impl<'index> Updater<'_> {
     }
 
     let mut height_to_block_hash = wtx.open_table(HEIGHT_TO_BLOCK_HASH)?;
+    let mut height_to_last_inscription_number =
+      wtx.open_table(HEIGHT_TO_LAST_INSCRIPTION_NUMBER)?;
     let mut inscription_id_to_inscription_entry =
       wtx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
     let mut inscription_id_to_satpoint = wtx.open_table(INSCRIPTION_ID_TO_SATPOINT)?;
@@ -383,6 +388,7 @@ impl<'index> Updater<'_> {
       wtx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
     let mut reinscription_id_to_seq_num = wtx.open_table(REINSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
     let mut sat_to_inscription_id = wtx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
+    let mut inscription_id_to_children = wtx.open_multimap_table(INSCRIPTION_ID_TO_CHILDREN)?;
     let mut satpoint_to_inscription_id = wtx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
@@ -398,6 +404,7 @@ impl<'index> Updater<'_> {
 
     let mut inscription_updater = InscriptionUpdater::new(
       self.height,
+      &mut inscription_id_to_children,
       &mut inscription_id_to_satpoint,
       value_receiver,
       &mut inscription_id_to_inscription_entry,
@@ -508,6 +515,12 @@ impl<'index> Updater<'_> {
       }
     }
 
+    self.index_block_inscription_numbers(
+      &mut height_to_last_inscription_number,
+      &inscription_updater,
+      index_inscriptions,
+    )?;
+
     statistic_to_count.insert(&Statistic::LostSats.key(), &inscription_updater.lost_sats)?;
 
     statistic_to_count.insert(
@@ -590,6 +603,27 @@ impl<'index> Updater<'_> {
       self.range_cache.insert(outpoint.store(), sats);
       self.outputs_inserted_since_flush += 1;
     }
+
+    Ok(())
+  }
+
+  fn index_block_inscription_numbers(
+    &mut self,
+    height_to_inscription_number: &mut Table<u64, (i64, i64)>,
+    inscription_updater: &InscriptionUpdater,
+    index_inscription: bool,
+  ) -> Result {
+    if !index_inscription {
+      return Ok(());
+    }
+
+    height_to_inscription_number.insert(
+      &self.height,
+      (
+        inscription_updater.next_number,
+        inscription_updater.next_cursed_number,
+      ),
+    )?;
 
     Ok(())
   }
