@@ -1,7 +1,7 @@
 `ord-mys3ql`
 =====
 
-`ord-mys3ql` is a forked version of `ord` that uploads inscription content to an aws s3 bucket, and inscription metadata to a mysql database. It also makes available an api that allows for easy access of the content/metadata. It is the backend behind the ordinal explorer available at [vermilion.place](https://vermilion.place).
+`ord-mys3ql` is a fork of `ord` that uploads inscription content to an aws s3 bucket, and inscription metadata to a mysql database. It also makes available an api that allows for easy access of the content/metadata. It is the backend behind the ordinal explorer available at [vermilion.place](https://vermilion.place).
 
 The goal is to make running ordinals based websites easier and less reliant on api's.
 
