@@ -390,6 +390,7 @@ impl<'index> Updater<'_> {
     let mut sat_to_inscription_id = wtx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
     let mut inscription_id_to_children = wtx.open_multimap_table(INSCRIPTION_ID_TO_CHILDREN)?;
     let mut satpoint_to_inscription_id = wtx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
+    let mut inscription_id_to_satpoint_history = wtx.open_multimap_table(INSCRIPTION_ID_TO_SATPOINT_HISTORY)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
     let mut lost_sats = statistic_to_count
@@ -417,6 +418,7 @@ impl<'index> Updater<'_> {
       block.header.time,
       unbound_inscriptions,
       value_cache,
+      &mut inscription_id_to_satpoint_history,
     )?;
 
     if self.index_sats {

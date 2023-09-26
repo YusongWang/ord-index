@@ -41,6 +41,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   timestamp: u32,
   pub(super) unbound_inscriptions: u64,
   value_cache: &'a mut HashMap<OutPoint, u64>,
+  id_to_satpoint_history: &'a mut MultimapTable<'db, 'tx, &'static InscriptionIdValue, &'static SatPointValue>,
 }
 
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
@@ -69,6 +70,12 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     timestamp: u32,
     unbound_inscriptions: u64,
     value_cache: &'a mut HashMap<OutPoint, u64>,
+    id_to_satpoint_history: &'a mut MultimapTable<
+      'db,
+      'tx,
+      &'static InscriptionIdValue,
+      &'static SatPointValue,
+    >,
   ) -> Result<Self> {
     let next_cursed_number = number_to_id
       .iter()?
@@ -103,6 +110,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       timestamp,
       unbound_inscriptions,
       value_cache,
+      id_to_satpoint_history,
     })
   }
 
@@ -477,7 +485,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
     self.satpoint_to_id.insert(&satpoint, &inscription_id)?;
     self.id_to_satpoint.insert(&inscription_id, &satpoint)?;
-
+    self.id_to_satpoint_history.insert(&inscription_id, &satpoint)?;
     Ok(())
   }
 }

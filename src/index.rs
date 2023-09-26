@@ -46,6 +46,7 @@ macro_rules! define_multimap_table {
 define_multimap_table! { INSCRIPTION_ID_TO_CHILDREN, &InscriptionIdValue, &InscriptionIdValue }
 define_multimap_table! { SATPOINT_TO_INSCRIPTION_ID, &SatPointValue, &InscriptionIdValue }
 define_multimap_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
+define_multimap_table! { INSCRIPTION_ID_TO_SATPOINT_HISTORY, &InscriptionIdValue, &SatPointValue }
 define_table! { HEIGHT_TO_BLOCK_HASH, u64, &BlockHashValue }
 define_table! { HEIGHT_TO_LAST_INSCRIPTION_NUMBER, u64, (i64, i64) }
 define_table! { INSCRIPTION_ID_TO_INSCRIPTION_ENTRY, &InscriptionIdValue, InscriptionEntryValue }
@@ -236,6 +237,7 @@ impl Index {
         tx.open_multimap_table(INSCRIPTION_ID_TO_CHILDREN)?;
         tx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
         tx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
+        tx.open_multimap_table(INSCRIPTION_ID_TO_SATPOINT_HISTORY)?;
         tx.open_table(HEIGHT_TO_BLOCK_HASH)?;
         tx.open_table(HEIGHT_TO_LAST_INSCRIPTION_NUMBER)?;
         tx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
