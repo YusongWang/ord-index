@@ -14,6 +14,19 @@
         "--http-port=1080"
       ],
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug indexer",
+      "program": "${workspaceFolder}/target/debug/ord",
+      "args": [
+        "index",
+        "run"
+      ],
+      "cwd": "${workspaceFolder}",
+      "exitCommands": ["process signal SIGTERM"],
+      "env": {"RUST_LOG": "warn", "RUST_BACKTRACE": "1"}
     }
   ]
 }
