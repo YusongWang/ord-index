@@ -69,24 +69,10 @@ impl Subcommand {
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
       Self::Vermilion(vermilion) => {        
-        vermilion.clone().run_vermilion_server(options.clone());
-        if vermilion.run_api_server_only {
-          // keep the process alive
-          let rt = Runtime::new().unwrap();
-          rt.block_on(async {
-            loop {            
-              if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-                break;
-              }
-              tokio::time::sleep(Duration::from_secs(10)).await;
-            }          
-          });
-          return Ok(Box::new(Empty {}) as Box<dyn Output>);
-        }
         let index = Arc::new(Index::open(&options)?);
         let handle = axum_server::Handle::new();
         LISTENERS.lock().unwrap().push(handle.clone());
-        vermilion.clone().run(options.clone(), index, handle)
+        vermilion.run(options, index, handle)
       }
     }
   }

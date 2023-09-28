@@ -46,7 +46,7 @@ macro_rules! define_multimap_table {
 define_multimap_table! { INSCRIPTION_ID_TO_CHILDREN, &InscriptionIdValue, &InscriptionIdValue }
 define_multimap_table! { SATPOINT_TO_INSCRIPTION_ID, &SatPointValue, &InscriptionIdValue }
 define_multimap_table! { SAT_TO_INSCRIPTION_ID, u64, &InscriptionIdValue }
-define_multimap_table! { INSCRIPTION_ID_TO_SATPOINT_HISTORY, &InscriptionIdValue, &SatPointValue }
+define_multimap_table! { HEIGHT_TO_TRANSFERS, u64, &[u8; 80] }
 define_table! { HEIGHT_TO_BLOCK_HASH, u64, &BlockHashValue }
 define_table! { HEIGHT_TO_LAST_INSCRIPTION_NUMBER, u64, (i64, i64) }
 define_table! { INSCRIPTION_ID_TO_INSCRIPTION_ENTRY, &InscriptionIdValue, InscriptionEntryValue }
@@ -237,7 +237,7 @@ impl Index {
         tx.open_multimap_table(INSCRIPTION_ID_TO_CHILDREN)?;
         tx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
         tx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
-        tx.open_multimap_table(INSCRIPTION_ID_TO_SATPOINT_HISTORY)?;
+        tx.open_multimap_table(HEIGHT_TO_TRANSFERS)?;
         tx.open_table(HEIGHT_TO_BLOCK_HASH)?;
         tx.open_table(HEIGHT_TO_LAST_INSCRIPTION_NUMBER)?;
         tx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
@@ -1038,6 +1038,38 @@ impl Index {
         .get(&inscription_id.store())?
         .map(|value| InscriptionEntry::load(value.value())),
     )
+  }
+
+  pub(crate) fn get_transfers_by_block_height(&self, height: u64) -> Result<Vec<(InscriptionId, SatPoint)>>  {
+    let mut return_vec = Vec::new();
+    let rtx = self
+      .database
+      .begin_read()?;
+    let height_to_transfers = rtx.open_multimap_table(HEIGHT_TO_TRANSFERS)?;
+    let transfers = height_to_transfers.get(&height)?;
+    for transfer in transfers {
+      let result = transfer.unwrap();
+      let transfer = result.value();
+      let (inscription_id, satpoint) = transfer.split_at(36);
+      let inscription_id = InscriptionId::load(inscription_id.try_into().unwrap());
+      let satpoint = SatPoint::load(satpoint.try_into().unwrap());
+      return_vec.push((inscription_id, satpoint));
+    }
+    Ok(return_vec)
+  }
+
+  pub(crate) fn get_blocks_indexed(&self) -> Result<u64> {
+    let rtx = self
+      .database
+      .begin_read()?;
+    let blocks_indexed = rtx
+      .open_table(HEIGHT_TO_BLOCK_HASH)?
+      .range(0..)?
+      .next_back()
+      .and_then(|result| result.ok())
+      .map(|(height, _hash)| height.value())
+      .unwrap_or(0);
+    Ok(blocks_indexed)
   }
 
   #[cfg(test)]

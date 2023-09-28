@@ -34,6 +34,7 @@ use tracing::Level as TraceLevel;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use std::thread::JoinHandle;
 use rand::Rng;
 use rand::SeedableRng;
 
@@ -107,6 +108,17 @@ pub struct Metadata {
 }
 
 #[derive(Clone, Serialize)]
+pub struct Transfer {
+  id: String,
+  block_number: i64,
+  block_timestamp: i64,
+  satpoint: String,
+  transaction: String,
+  address: String,
+  is_genesis: bool
+}
+
+#[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
   content_type: Option<String>
@@ -170,40 +182,53 @@ pub struct ApiServerConfig {
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> SubcommandResult {
-    println!("Ordinals Indexer Starting");
-    //1. Ordinals Server
-    let server = server::Server {
-      address: self.address,
-      acme_domain: self.acme_domain,
-      http_port: self.http_port,
-      https_port: self.https_port,
-      acme_cache: self.acme_cache,
-      acme_contact: self.acme_contact,
-      http: self.http,
-      https: self.https,
-      redirect_http_to_https: self.redirect_http_to_https,
-    };
-    let server_index_clone = index.clone();
-    let server_options_clone = options.clone();
-    let server_thread = thread::spawn(move || {
-      let server_result = server.run(server_options_clone, server_index_clone, handle);
-      match server_result {
-        Ok(_) => {
-          println!("Ordinals server stopped");
-        },
-        Err(err) => {
-          println!("Ordinals server failed to start: {:?}", err);
-        }
-      }
-    });
+    //1. Run Vermilion Server
+    println!("Vermilion Server Starting");
+    let vermilion_server_clone = self.clone();
+    let vermilion_server_thread = vermilion_server_clone.run_vermilion_server(options.clone());
 
-    //2. Vermilion Indexer
+    if self.run_api_server_only {//If only running api server, block here, early return on ctrl-c
+      let rt = Runtime::new().unwrap();
+      rt.block_on(async {
+        loop {            
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            break;
+          }
+          tokio::time::sleep(Duration::from_secs(10)).await;
+        }          
+      });
+      return Ok(Box::new(Empty {}) as Box<dyn Output>);
+    }
+
+    //2. Run Ordinals Server
+    println!("Ordinals Server Starting");
+    let ordinals_server_clone = self.clone();
+    let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
+
+    //3. Run Address Indexer
+    println!("Address Indexer Starting");
+    let address_indexer_clone = self.clone();
+    let address_indexer_thread = address_indexer_clone.run_address_indexer(options.clone(), index.clone());
+
+    //4. Run Inscription Indexer
+    println!("Inscription Indexer Starting");
+    let inscription_indexer_clone = self.clone();
+    inscription_indexer_clone.run_inscription_indexer(options.clone(), index.clone()); //this blocks
+    println!("Inscription Indexer Stopped");
+
+    //Wait for other threads to finish before exiting
+    vermilion_server_thread.join().unwrap();
+    ordinals_server_thread.join().unwrap();
+    address_indexer_thread.join().unwrap();
+    Ok(Box::new(Empty {}) as Box<dyn Output>)
+  }
+
+  pub(crate) fn run_inscription_indexer(self, options: Options, index: Arc<Index>) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(async {      
-      println!("Vermilion Indexer Starting");
+    rt.block_on(async {
       let clone = index.clone();
       println!("Index acquired");
       let config = options.load_config().unwrap();
@@ -245,7 +270,7 @@ impl Vermilion {
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_timing_vector = timing_vector.clone();
-        let fetcher = fetcher::Fetcher::new(&options)?;//Need a new fetcher for each thread
+        let fetcher = fetcher::Fetcher::new(&options).unwrap();//Need a new fetcher for each thread
         tokio::task::spawn(async move {
           let t1 = Instant::now();
           let _permit = permit;
@@ -402,13 +427,114 @@ impl Vermilion {
           }
         });        
         
-      }      
-      Ok(Box::new(Empty {}) as Box<dyn Output>)
+      }
     })
   }
 
-  pub(crate) fn run_vermilion_server(self, options: Options) {
-    println!("Vermilion Server Running");
+  pub(crate) fn run_address_indexer(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
+    let address_indexer_thread = thread::spawn(move ||{
+      let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+      rt.block_on(async move {
+        let config = options.load_config().unwrap();
+        let url = config.db_connection_string.unwrap();
+        let pool = Pool::new(url.as_str());
+        Self::create_transfers_table(&pool).await.unwrap();
+
+        let fetcher = fetcher::Fetcher::new(&options).unwrap();
+        let first_height = options.first_inscription_height();
+        let db_height = Self::get_start_block(&pool).await.unwrap();
+        let mut height = std::cmp::max(first_height, db_height);
+        println!("start height: {:?}", height);
+        loop {
+          // break if ctrl-c is received
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            break;
+          }
+
+          // make sure block is indexed before requesting transfers
+          let indexed_height = index.get_blocks_indexed().unwrap();
+          if height > indexed_height {
+            println!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+          }
+
+          let transfers = match index.get_transfers_by_block_height(height) {
+            Ok(transfers) => transfers,
+            Err(err) => {
+              println!("Error getting transfers for block height: {:?} - {:?}, waiting a minute", height, err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+
+          if transfers.len() == 0 {
+            height += 1;
+            continue;
+          }
+
+          let txs = match fetcher.get_transactions(transfers.clone().into_iter().map(|(id, satpoint)| satpoint.outpoint.txid).collect()).await {
+            Ok(txs) => {
+              txs
+            }
+            Err(e) => {
+              println!("Error getting transfer transactions for block height: {:?} - {:?}, waiting a minute", height, e);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+
+          let iterator=transfers
+            .into_iter()
+            .zip(txs.into_iter())
+            .map(|((a,b),c)| (a,b,c));
+          
+          let mut id_point_address = Vec::new();
+          for (id, satpoint, tx) in iterator {
+            let address = if satpoint.outpoint == unbound_outpoint() {
+              "unbound".to_string()
+            } else {
+              let output = tx
+                .output
+                .into_iter()
+                .nth(satpoint.outpoint.vout.try_into().unwrap())
+                .unwrap();
+              options
+                .chain()
+                .address_from_script(&output.script_pubkey)
+                .map(|address| address.to_string())
+                .unwrap_or_else(|e| e.to_string())
+            };
+            id_point_address.push((id, satpoint, address));
+          }
+
+          let block_time = index.block_time(Height(height)).unwrap();
+          let mut transfer_vec = Vec::new();
+          for (id, point, address) in id_point_address {
+            let transfer = Transfer {
+              id: id.to_string(),
+              block_number: height.try_into().unwrap(),
+              block_timestamp: block_time.timestamp().timestamp_millis(),
+              satpoint: point.to_string(),
+              transaction: point.outpoint.txid.to_string(),
+              address: address,
+              is_genesis: point.outpoint.txid == id.txid && point.outpoint.vout == id.index
+            };
+            transfer_vec.push(transfer);
+          }
+          Self::bulk_insert_transfers(&pool, transfer_vec).await.unwrap();
+          height += 1;
+        }
+        println!("Address indexer stopped");
+      })
+    });
+    return address_indexer_thread;
+  }
+
+  pub(crate) fn run_vermilion_server(self, options: Options) -> JoinHandle<()> {
     let api_server_options_clone = options.clone();
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
@@ -456,13 +582,45 @@ impl Vermilion {
         //tracing::debug!("listening on {}", addr);
         axum::Server::bind(&addr)
             .serve(app.into_make_service())
+            .with_graceful_shutdown(Self::shutdown_signal())
             .await
             .unwrap();
       });
+      println!("Vermilion server stopped");
     });
+    return verm_server_thread;
   }
 
-  //Indexer Helper functions
+  pub(crate) fn run_ordinals_server(self, options: Options, index: Arc<Index>, handle: Handle) -> JoinHandle<()> {
+    //1. Ordinals Server
+    let server = server::Server {
+      address: self.address,
+      acme_domain: self.acme_domain,
+      http_port: self.http_port,
+      https_port: self.https_port,
+      acme_cache: self.acme_cache,
+      acme_contact: self.acme_contact,
+      http: self.http,
+      https: self.https,
+      redirect_http_to_https: self.redirect_http_to_https,
+    };
+    let server_index_clone = index.clone();
+    let server_options_clone = options.clone();
+    let server_thread = thread::spawn(move || {
+      let server_result = server.run(server_options_clone, server_index_clone, handle);
+      match server_result {
+        Ok(_) => {
+          println!("Ordinals server stopped");
+        },
+        Err(err) => {
+          println!("Ordinals server failed to start: {:?}", err);
+        }
+      }
+    });
+    return server_thread;
+  }
+
+  //Inscription Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
     let id = inscription_id.to_string();	
     let key = format!("content/{}", id);
@@ -839,6 +997,71 @@ impl Vermilion {
 
   }
 
+  //Address Indexer Helper functions
+  pub(crate) async fn create_transfers_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS transfers (
+        id varchar(80) not null,
+        block_number bigint not null,
+        block_timestamp bigint,
+        satpoint text,
+        transaction text,
+        address text,
+        is_genesis boolean,
+        PRIMARY KEY (`id`,`block_number`)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn bulk_insert_transfers(pool: &mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, address, is_genesis)
+        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :address, :is_genesis)
+        ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), address=VALUES(address), is_genesis=VALUES(is_genesis)",
+        transfer_vec.iter().map(|transfer| params! { 
+          "id" => &transfer.id,
+          "block_number" => &transfer.block_number,
+          "block_timestamp" => &transfer.block_timestamp,
+          "satpoint" => &transfer.satpoint,
+          "transaction" => &transfer.transaction,
+          "address" => &transfer.address,
+          "is_genesis" => &transfer.is_genesis
+      })
+    ).await;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) async fn get_start_block(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let row = conn.query_iter("select max(block_number) from transfers")
+      .await
+      .unwrap()
+      .next()
+      .await
+      .unwrap()
+      .unwrap();
+    let row = mysql_async::from_row::<Option<i64>>(row);
+    let block_number = match row {
+      Some(row) => {
+        let block_number: u64 = row.try_into().unwrap();
+        block_number+1
+      },
+      None => {
+        0
+      }
+    };
+    Ok(block_number)
+  }
   //Server api functions
   async fn root() -> &'static str {    
 "One of the fastest ways to dox yourself as a cryptopleb is to ask \"what's the reason for the Bitcoin pump today.\"
@@ -951,6 +1174,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
     )
+  }
+
+  async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("expect tokio signal ctrl-c");
   }
 
   //DB functions

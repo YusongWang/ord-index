@@ -41,7 +41,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   timestamp: u32,
   pub(super) unbound_inscriptions: u64,
   value_cache: &'a mut HashMap<OutPoint, u64>,
-  id_to_satpoint_history: &'a mut MultimapTable<'db, 'tx, &'static InscriptionIdValue, &'static SatPointValue>,
+  height_to_transfers: &'a mut MultimapTable<'db, 'tx, u64, &'static [u8; 80]>,
 }
 
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
@@ -70,11 +70,11 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     timestamp: u32,
     unbound_inscriptions: u64,
     value_cache: &'a mut HashMap<OutPoint, u64>,
-    id_to_satpoint_history: &'a mut MultimapTable<
+    height_to_transfers: &'a mut MultimapTable<
       'db,
       'tx,
-      &'static InscriptionIdValue,
-      &'static SatPointValue,
+      u64,
+      &'static [u8; 80],
     >,
   ) -> Result<Self> {
     let next_cursed_number = number_to_id
@@ -110,7 +110,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       timestamp,
       unbound_inscriptions,
       value_cache,
-      id_to_satpoint_history,
+      height_to_transfers,
     })
   }
 
@@ -485,7 +485,14 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
     self.satpoint_to_id.insert(&satpoint, &inscription_id)?;
     self.id_to_satpoint.insert(&inscription_id, &satpoint)?;
-    self.id_to_satpoint_history.insert(&inscription_id, &satpoint)?;
+    let transfer: [u8; 80] = {
+      let mut transfer: [u8; 80] = [0; 80];
+      let (one, two) = transfer.split_at_mut(36);
+      one.copy_from_slice(&inscription_id);
+      two.copy_from_slice(&satpoint);
+      transfer
+    };
+    self.height_to_transfers.insert(&self.height, &transfer)?; //&inscription_id, &satpoint
     Ok(())
   }
 }
