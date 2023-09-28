@@ -442,6 +442,7 @@ impl Vermilion {
         let url = config.db_connection_string.unwrap();
         let pool = Pool::new(url.as_str());
         Self::create_transfers_table(&pool).await.unwrap();
+        Self::create_address_table(&pool).await.unwrap();
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
         let first_height = options.first_inscription_height();
@@ -478,12 +479,29 @@ impl Vermilion {
 
           let txs = match fetcher.get_transactions(transfers.clone().into_iter().map(|(id, satpoint)| satpoint.outpoint.txid).collect()).await {
             Ok(txs) => {
-              txs
+              txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
             Err(e) => {
-              println!("Error getting transfer transactions for block height: {:?} - {:?}, waiting a minute", height, e);
-              tokio::time::sleep(Duration::from_secs(60)).await;
-              continue;
+              println!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
+              if e.to_string().contains("No such mempool or blockchain transaction") {
+                println!("Attempting 1 at a time");
+                let mut txs = Vec::new();
+                for (id, satpoint) in transfers.clone() {
+                  let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
+                    Ok(mut tx) => Some(tx.pop().unwrap()),
+                    Err(e) => {
+                      println!("Error getting transfer transaction: {:?} for {:?} - {:?}, skipping", satpoint.outpoint.txid, id, e);
+                      None
+                    }
+                  };
+                  txs.push(tx)
+                }
+                txs
+              } else {
+                println!("Waiting a minute");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }              
             }
           };
 
@@ -498,6 +516,7 @@ impl Vermilion {
               "unbound".to_string()
             } else {
               let output = tx
+                .unwrap()
                 .output
                 .into_iter()
                 .nth(satpoint.outpoint.vout.try_into().unwrap())
@@ -525,7 +544,8 @@ impl Vermilion {
             };
             transfer_vec.push(transfer);
           }
-          Self::bulk_insert_transfers(&pool, transfer_vec).await.unwrap();
+          Self::bulk_insert_transfers(&pool, transfer_vec.clone()).await.unwrap();
+          Self::bulk_insert_addresses(&pool, transfer_vec).await.unwrap();
           height += 1;
         }
         println!("Address indexer stopped");
@@ -565,6 +585,11 @@ impl Vermilion {
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/random_inscription", get(Self::random_inscription))
+          .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
+          .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
+          .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
+          .route("/inscription_transfers_number/:number", get(Self::inscription_transfers_number))
+          .route("/inscriptions_in_address/:address", get(Self::inscriptions_in_address))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -1009,7 +1034,9 @@ impl Vermilion {
         transaction text,
         address text,
         is_genesis boolean,
-        PRIMARY KEY (`id`,`block_number`)
+        PRIMARY KEY (`id`,`block_number`),
+        INDEX index_id (id),
+        INDEX index_block (block_number)
       )").await.unwrap();
     Ok(())
   }
@@ -1035,7 +1062,51 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting ordinal metadata: {}", error);
+        println!("Error bulk inserting ordinal transfers: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) async fn create_address_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS addresses (
+        id varchar(80) not null primary key,
+        block_number bigint not null,
+        block_timestamp bigint,
+        satpoint text,
+        transaction text,
+        address varchar(100),
+        is_genesis boolean,
+        INDEX index_id (id),
+        INDEX index_address (address)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn bulk_insert_addresses(pool: &mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, address, is_genesis)
+        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :address, :is_genesis)
+        ON DUPLICATE KEY UPDATE block_number=VALUES(block_number), block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), address=VALUES(address), is_genesis=VALUES(is_genesis)",
+        transfer_vec.iter().map(|transfer| params! { 
+          "id" => &transfer.id,
+          "block_number" => &transfer.block_number,
+          "block_timestamp" => &transfer.block_timestamp,
+          "satpoint" => &transfer.satpoint,
+          "transaction" => &transfer.transaction,
+          "address" => &transfer.address,
+          "is_genesis" => &transfer.is_genesis
+      })
+    ).await;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting ordinal addresses: {}", error);
         Err(Box::new(error))
       }
     }
@@ -1173,6 +1244,46 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
+    )
+  }
+
+  async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let transfer = Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(transfer),
+    )
+  }
+
+  async fn inscription_last_transfer_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let transfer = Self::get_last_ordinal_transfer_by_number(server_config.pool, number).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(transfer),
+    )
+  }
+
+  async fn inscription_transfers(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let transfers = Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(transfers),
+    )
+  }
+
+  async fn inscription_transfers_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let transfers = Self::get_ordinal_transfers_by_number(server_config.pool, number).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(transfers),
+    )
+  }
+
+  async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions = Self::get_inscriptions_by_address(server_config.pool, address).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
     )
   }
 
@@ -1377,6 +1488,106 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     conn
   }
 
+  async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> Transfer {
+    let mut conn = Self::get_conn(pool).await;
+    let transfer = conn.exec_map(
+      "select * from transfers where id=:id order by block_number desc limit 1", 
+      params! {
+        "id" => inscription_id
+      },
+      |row: mysql_async::Row| Transfer {
+        id: row.get("id").unwrap(),
+        block_number: row.get("block_number").unwrap(),
+        block_timestamp: row.get("block_timestamp").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        transaction: row.get("transaction").unwrap(),
+        address: row.get("address").unwrap(),
+        is_genesis: row.get("is_genesis").unwrap()
+      }
+    ).await.unwrap().pop().unwrap();
+    transfer
+  }
+
+  async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> Transfer {
+    let mut conn = Self::get_conn(pool).await;
+    let transfer = conn.exec_map(
+      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      params! {
+        "number" => number
+      },
+      |row: mysql_async::Row| Transfer {
+        id: row.get("id").unwrap(),
+        block_number: row.get("block_number").unwrap(),
+        block_timestamp: row.get("block_timestamp").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        transaction: row.get("transaction").unwrap(),
+        address: row.get("address").unwrap(),
+        is_genesis: row.get("is_genesis").unwrap()
+      }
+    ).await.unwrap().pop().unwrap();
+    transfer
+  }
+
+  async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> Vec<Transfer> {
+    let mut conn = Self::get_conn(pool).await;
+    let transfers = conn.exec_map(
+      "select * from transfers where id=:id order by block_number asc", 
+      params! {
+        "id" => inscription_id
+      },
+      |row: mysql_async::Row| Transfer {
+        id: row.get("id").unwrap(),
+        block_number: row.get("block_number").unwrap(),
+        block_timestamp: row.get("block_timestamp").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        transaction: row.get("transaction").unwrap(),
+        address: row.get("address").unwrap(),
+        is_genesis: row.get("is_genesis").unwrap()
+      }
+    ).await.unwrap();
+    transfers
+  }
+
+  async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> Vec<Transfer> {
+    let mut conn = Self::get_conn(pool).await;
+    let transfers = conn.exec_map(
+      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      params! {
+        "number" => number
+      },
+      |row: mysql_async::Row| Transfer {
+        id: row.get("id").unwrap(),
+        block_number: row.get("block_number").unwrap(),
+        block_timestamp: row.get("block_timestamp").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        transaction: row.get("transaction").unwrap(),
+        address: row.get("address").unwrap(),
+        is_genesis: row.get("is_genesis").unwrap()
+      }
+    ).await.unwrap();
+    transfers
+  }
+
+  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<Transfer> {
+    let mut conn = Self::get_conn(pool).await;
+    let transfers = conn.exec_map(
+      "select * from addresses where address=:address", 
+      params! {
+        "address" => address
+      },
+      |row: mysql_async::Row| Transfer {
+        id: row.get("id").unwrap(),
+        block_number: row.get("block_number").unwrap(),
+        block_timestamp: row.get("block_timestamp").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        transaction: row.get("transaction").unwrap(),
+        address: row.get("address").unwrap(),
+        is_genesis: row.get("is_genesis").unwrap()
+      }
+    ).await.unwrap();
+    transfers
+  }
+
   async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
@@ -1421,7 +1632,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       CREATE TABLE weights as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-(1-sqrt(a.count)/a.count)*(a.is_json)) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
@@ -1437,7 +1648,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_new;
       CREATE TABLE weights_new as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-(1-sqrt(a.count)/a.count)*(a.is_json)) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
