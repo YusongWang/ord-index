@@ -98,7 +98,7 @@ pub struct Metadata {
   genesis_transaction: String,
   location: String,
   number: i64,
-  sequence_number: u64,
+  sequence_number: Option<u64>,
   offset: i64,
   output_transaction: String,
   sat: Option<i64>,
@@ -106,8 +106,8 @@ pub struct Metadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
-  is_bitmap_style: bool,
-  is_recursive: bool
+  is_bitmap_style: Option<bool>,
+  is_recursive: Option<bool>
 }
 
 #[derive(Clone, Serialize)]
@@ -800,7 +800,7 @@ impl Vermilion {
       genesis_transaction: inscription_id.txid.to_string(),
       location: satpoint.to_string(),
       number: entry.inscription_number,
-      sequence_number: entry.sequence_number,
+      sequence_number: Some(entry.sequence_number),
       offset: satpoint.offset.try_into().unwrap(),
       output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
@@ -808,8 +808,8 @@ impl Vermilion {
       sha256: sha256,
       text: text,
       is_json: is_json,
-      is_bitmap_style: is_bitmap_style,
-      is_recursive: is_recursive
+      is_bitmap_style: Some(is_bitmap_style),
+      is_recursive: Some(is_recursive)
     };
     Ok(metadata)
   }
@@ -1386,7 +1386,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_transaction: row.get("genesis_transaction").unwrap(),
         location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
+        sequence_number: row.take("sequence_number").unwrap(),
         offset: row.get("offset").unwrap(),
         output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
@@ -1394,8 +1394,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
+        is_recursive: row.take("is_recursive").unwrap()
       }
     );
     let result = result.await.unwrap().pop().unwrap();
