@@ -289,11 +289,13 @@ impl Vermilion {
           let _permit = permit;
           let needed_numbers = Self::get_needed_sequence_numbers(cloned_status_vector.clone()).await;
           let mut should_sleep = false;
-          println!("Trying Numbers: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);          
+          let first_number = needed_numbers[0];
+          let mut last_number = needed_numbers[needed_numbers.len()-1];
+          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
 
           //1. Get ids
           let t2 = Instant::now();
-          let mut inscription_ids: Vec<InscriptionId> = Vec::new();          
+          let mut inscription_ids: Vec<InscriptionId> = Vec::new();
           for j in needed_numbers.clone() {
             let inscription_id = cloned_index.get_inscription_id_by_sequence_number(j).unwrap();
             match inscription_id {
@@ -301,7 +303,8 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                println!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop", j);
+                println!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 for l in needed_numbers.clone() {                  
                   let mut locked_status_vector = status_vector.lock().await;
@@ -323,7 +326,7 @@ impl Vermilion {
           let err_txs = match txs {
               Ok(txs) => Some(txs),
               Err(error) => {
-                println!("Error getting transactions {}-{}: {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], error);
+                println!("Error getting transactions {}-{}: {:?}", first_number, last_number, error);
                 let status_vector = cloned_status_vector.clone();
                 for j in needed_numbers.clone() {                  
                   let mut locked_status_vector = status_vector.lock().await;
@@ -393,7 +396,7 @@ impl Vermilion {
           //4.2 Update status
           let t52 = Instant::now();
           if insert_result.is_err() {
-            println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
+            println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
@@ -411,10 +414,12 @@ impl Vermilion {
           
           //5. Log timings
           let t6 = Instant::now();
-          println!("Finished numbers {} - {} @ {:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1], t5);
+          if first_number != last_number {
+            println!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
+          }
           let timing = IndexerTimings {
-            inscription_start: needed_numbers[0],
-            inscription_end: needed_numbers[&needed_numbers.len()-1],
+            inscription_start: first_number,
+            inscription_end: last_number,
             acquire_permit_start: t0,
             acquire_permit_end: t1,
             get_numbers_start: t1,
@@ -436,7 +441,6 @@ impl Vermilion {
 
           //6. Sleep thread if up to date.
           if should_sleep {
-            println!("Sleeping for 60s");
             tokio::time::sleep(Duration::from_secs(60)).await;
           }
         });        
