@@ -379,23 +379,31 @@ impl<'index> Updater<'_> {
     }
 
     let mut height_to_block_hash = wtx.open_table(HEIGHT_TO_BLOCK_HASH)?;
-    let mut height_to_last_inscription_number =
-      wtx.open_table(HEIGHT_TO_LAST_INSCRIPTION_NUMBER)?;
+    let mut height_to_last_sequence_number = wtx.open_table(HEIGHT_TO_LAST_SEQUENCE_NUMBER)?;
     let mut inscription_id_to_inscription_entry =
       wtx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
     let mut inscription_id_to_satpoint = wtx.open_table(INSCRIPTION_ID_TO_SATPOINT)?;
-    let mut inscription_number_to_inscription_id =
-      wtx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
-    let mut reinscription_id_to_seq_num = wtx.open_table(REINSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
     let mut sat_to_inscription_id = wtx.open_multimap_table(SAT_TO_INSCRIPTION_ID)?;
     let mut inscription_id_to_children = wtx.open_multimap_table(INSCRIPTION_ID_TO_CHILDREN)?;
     let mut satpoint_to_inscription_id = wtx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
+    let mut sequence_number_to_inscription_id =
+      wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ID)?;
     let mut height_to_transfers = wtx.open_multimap_table(HEIGHT_TO_TRANSFERS)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
       .map(|lost_sats| lost_sats.value())
+      .unwrap_or(0);
+
+    let cursed_inscription_count = statistic_to_count
+      .get(&Statistic::CursedInscriptions.key())?
+      .map(|count| count.value())
+      .unwrap_or(0);
+
+    let blessed_inscription_count = statistic_to_count
+      .get(&Statistic::BlessedInscriptions.key())?
+      .map(|count| count.value())
       .unwrap_or(0);
 
     let unbound_inscriptions = statistic_to_count
@@ -410,9 +418,10 @@ impl<'index> Updater<'_> {
       value_receiver,
       &mut inscription_id_to_inscription_entry,
       lost_sats,
-      &mut inscription_number_to_inscription_id,
+      cursed_inscription_count,
+      blessed_inscription_count,
+      &mut sequence_number_to_inscription_id,
       &mut outpoint_to_value,
-      &mut reinscription_id_to_seq_num,
       &mut sat_to_inscription_id,
       &mut satpoint_to_inscription_id,
       block.header.time,
@@ -513,17 +522,27 @@ impl<'index> Updater<'_> {
       }
     } else {
       for (tx, txid) in block.txdata.iter().skip(1).chain(block.txdata.first()) {
-        inscription_updater.index_transaction_inscriptions(tx, *txid, None)?;
+        inscription_updater.index_envelopes(tx, *txid, None)?;
       }
     }
 
     self.index_block_inscription_numbers(
-      &mut height_to_last_inscription_number,
+      &mut height_to_last_sequence_number,
       &inscription_updater,
       index_inscriptions,
     )?;
 
     statistic_to_count.insert(&Statistic::LostSats.key(), &inscription_updater.lost_sats)?;
+
+    statistic_to_count.insert(
+      &Statistic::CursedInscriptions.key(),
+      &inscription_updater.cursed_inscription_count,
+    )?;
+
+    statistic_to_count.insert(
+      &Statistic::BlessedInscriptions.key(),
+      &inscription_updater.blessed_inscription_count,
+    )?;
 
     statistic_to_count.insert(
       &Statistic::UnboundInscriptions.key(),
@@ -555,7 +574,7 @@ impl<'index> Updater<'_> {
     index_inscriptions: bool,
   ) -> Result {
     if index_inscriptions {
-      inscription_updater.index_transaction_inscriptions(tx, txid, Some(input_sat_ranges))?;
+      inscription_updater.index_envelopes(tx, txid, Some(input_sat_ranges))?;
     }
 
     for (vout, output) in tx.output.iter().enumerate() {
@@ -611,7 +630,7 @@ impl<'index> Updater<'_> {
 
   fn index_block_inscription_numbers(
     &mut self,
-    height_to_inscription_number: &mut Table<u64, (i64, i64)>,
+    height_to_sequence_number: &mut Table<u64, u64>,
     inscription_updater: &InscriptionUpdater,
     index_inscription: bool,
   ) -> Result {
@@ -619,13 +638,7 @@ impl<'index> Updater<'_> {
       return Ok(());
     }
 
-    height_to_inscription_number.insert(
-      &self.height,
-      (
-        inscription_updater.next_number,
-        inscription_updater.next_cursed_number,
-      ),
-    )?;
+    height_to_sequence_number.insert(&self.height, inscription_updater.next_sequence_number)?;
 
     Ok(())
   }
