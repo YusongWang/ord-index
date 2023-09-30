@@ -7,9 +7,9 @@ pub(crate) struct Config {
   pub(crate) bitcoin_rpc_pass: Option<String>,
   pub(crate) bitcoin_rpc_user: Option<String>,
   pub(crate) db_connection_string: Option<String>,
-  pub(crate) start_number_override: Option<i64>,
+  pub(crate) start_number_override: Option<u64>,
   pub(crate) s3_bucket_name: Option<String>,
-  pub(crate) s3_upload_start_number: Option<i64>,
+  pub(crate) s3_upload_start_number: Option<u64>,
   pub(crate) s3_head_check: Option<bool>
 }
 

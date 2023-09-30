@@ -1,5 +1,6 @@
 use super::*;
 use axum_server::Handle;
+use crate::envelope::Envelope;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -98,6 +99,7 @@ pub struct Metadata {
   genesis_transaction: String,
   location: String,
   number: i64,
+  sequence_number: u64,
   offset: i64,
   output_transaction: String,
   sat: Option<i64>,
@@ -149,15 +151,15 @@ pub struct RandomInscriptionNumber {
   number: i64
 }
 
-pub struct InscriptionNumberStatus {
-  inscription_number: i64,
+pub struct SequenceNumberStatus {
+  sequence_number: u64,
   status: String
 }
 
 #[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
 pub struct IndexerTimings {
-  inscription_start: i64,
-  inscription_end: i64,
+  inscription_start: u64,
+  inscription_end: u64,
   acquire_permit_start: Instant,
   acquire_permit_end: Instant,
   get_numbers_start: Instant,
@@ -231,8 +233,6 @@ impl Vermilion {
         .build()
         .unwrap();
     rt.block_on(async {
-      let clone = index.clone();
-      println!("Index acquired");
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str());
@@ -244,7 +244,7 @@ impl Vermilion {
       let s3_head_check = config.s3_head_check.unwrap_or(false);
       let n_threads = self.n_threads.unwrap_or(1).into();
       let sem = Arc::new(Semaphore::new(n_threads));
-      let status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
+      let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).await.unwrap();      
       Self::create_edition_procedure(pool.clone()).await.unwrap();
@@ -253,10 +253,10 @@ impl Vermilion {
         Some(start_number_override) => start_number_override,
         None => Self::get_last_number(&pool).await.unwrap() + 1
       };
-      println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number-1, start_number);
-      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
-      let initial = InscriptionNumberStatus {
-        inscription_number: start_number,
+      println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number.checked_sub(1), start_number);
+      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number).checked_sub(1), std::cmp::max(s3_upload_start_number, start_number));
+      let initial = SequenceNumberStatus {
+        sequence_number: start_number,
         status: "UNKNOWN".to_string()
       };
       status_vector.lock().await.push(initial);
@@ -271,7 +271,7 @@ impl Vermilion {
           break;
         }
         let permit = Arc::clone(&sem).acquire_owned().await;
-        let cloned_index = clone.clone();
+        let cloned_index = index.clone();
         let cloned_pool = pool.clone();        
         let cloned_s3client = s3client.clone();
         let cloned_bucket_name = s3_bucket_name.clone();
@@ -281,7 +281,7 @@ impl Vermilion {
         tokio::task::spawn(async move {
           let t1 = Instant::now();
           let _permit = permit;
-          let needed_numbers = Self::get_needed_inscription_numbers(cloned_status_vector.clone()).await;
+          let needed_numbers = Self::get_needed_sequence_numbers(cloned_status_vector.clone()).await;
           let mut should_sleep = false;
           println!("Trying Numbers: {:?}-{:?}", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);          
 
@@ -289,7 +289,7 @@ impl Vermilion {
           let t2 = Instant::now();
           let mut inscription_ids: Vec<InscriptionId> = Vec::new();          
           for j in needed_numbers.clone() {
-            let inscription_id = cloned_index.get_inscription_id_by_inscription_number(j).unwrap();
+            let inscription_id = cloned_index.get_inscription_id_by_sequence_number(j).unwrap();
             match inscription_id {
               Some(inscription_id) => {
                 inscription_ids.push(inscription_id);
@@ -299,7 +299,7 @@ impl Vermilion {
                 let status_vector = cloned_status_vector.clone();
                 for l in needed_numbers.clone() {                  
                   let mut locked_status_vector = status_vector.lock().await;
-                  let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == l).unwrap();
+                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == l).unwrap();
                   if l >= j {
                     status.status = "NOT_FOUND".to_string();
                   }                
@@ -321,7 +321,7 @@ impl Vermilion {
                 let status_vector = cloned_status_vector.clone();
                 for j in needed_numbers.clone() {                  
                   let mut locked_status_vector = status_vector.lock().await;
-                  let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
+                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
                   status.status = "ERROR".to_string();
                 }
                 println!("error string: {}", error.to_string());
@@ -341,9 +341,10 @@ impl Vermilion {
           let id_txs: Vec<_> = cloned_ids.into_iter().zip(clean_txs.into_iter()).collect();
           let mut inscriptions: Vec<Inscription> = Vec::new();
           for (inscription_id, tx) in id_txs {
-            let inscription = Inscription::from_transaction(&tx)
-              .get(inscription_id.index as usize)
-              .map(|transaction_inscription| transaction_inscription.inscription.clone())
+            let inscription = ParsedEnvelope::from_transaction(&tx)
+              .into_iter()
+              .nth(inscription_id.index as usize)
+              .map(|envelope| envelope.payload)
               .unwrap();
             inscriptions.push(inscription);
           }
@@ -389,13 +390,13 @@ impl Vermilion {
             println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", &needed_numbers[0], &needed_numbers[&needed_numbers.len()-1]);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
-              let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
+              let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
               status.status = "ERROR".to_string();
             }
           } else {
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
-              let status = locked_status_vector.iter_mut().find(|x| x.inscription_number == j).unwrap();
+              let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
               if status.status != "NOT_FOUND".to_string() {
                 status.status = "SUCCESS".to_string();
               }              
@@ -562,11 +563,10 @@ impl Vermilion {
   }
 
   pub(crate) fn run_vermilion_server(self, options: Options) -> JoinHandle<()> {
-    let api_server_options_clone = options.clone();
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
-        let config = api_server_options_clone.load_config().unwrap();
+        let config = options.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = mysql_async::Pool::new(url.as_str());
         let bucket_name = config.s3_bucket_name.unwrap();
@@ -636,10 +636,8 @@ impl Vermilion {
       https: self.https,
       redirect_http_to_https: self.redirect_http_to_https,
     };
-    let server_index_clone = index.clone();
-    let server_options_clone = options.clone();
     let server_thread = thread::spawn(move || {
-      let server_result = server.run(server_options_clone, server_index_clone, handle);
+      let server_result = server.run(options, index, handle);
       match server_result {
         Ok(_) => {
           println!("Ordinals server stopped");
@@ -802,7 +800,8 @@ impl Vermilion {
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
       location: satpoint.to_string(),
-      number: entry.number,
+      number: entry.inscription_number,
+      sequence_number: entry.sequence_number,
       offset: satpoint.offset.try_into().unwrap(),
       output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
@@ -828,6 +827,7 @@ impl Vermilion {
           genesis_transaction text,
           location text,
           number bigint,
+          sequence_number bigint unsigned,
           offset bigint,
           output_transaction text,
           sat bigint,
@@ -839,6 +839,7 @@ impl Vermilion {
           is_recursive boolean,
           INDEX index_id (id),
           INDEX index_number (number),
+          INDEX index_sequence_number (sequence_number),
           INDEX index_block (genesis_height),
           INDEX index_sha256 (sha256)
       )").await.unwrap();
@@ -849,10 +850,10 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_bitmap_style, is_recursive)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_bitmap_style, :is_recursive)
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, sequence_number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_bitmap_style, is_recursive)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :sequence_number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_bitmap_style, :is_recursive)
         ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-        location=VALUES(location), number=VALUES(number), offset=VALUES(offset), output_transaction=VALUES(output_transaction), sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), 
+        location=VALUES(location), number=VALUES(number), sequence_number=VALUES(sequence_number), offset=VALUES(offset), output_transaction=VALUES(output_transaction), sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), 
         is_json=VALUES(is_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
@@ -863,6 +864,7 @@ impl Vermilion {
           "genesis_transaction" => &metadata.genesis_transaction,
           "location" => &metadata.location,
           "number" => &metadata.number,
+          "sequence_number" => &metadata.sequence_number,
           "offset" => &metadata.offset,
           "output_transaction" => &metadata.output_transaction,
           "sat" => &metadata.sat,
@@ -884,7 +886,7 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<i64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn().await.unwrap();
     let row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
       .await
@@ -893,10 +895,10 @@ impl Vermilion {
       .await
       .unwrap()
       .unwrap();
-    let row = mysql_async::from_row::<Option<i64>>(row);
+    let row = mysql_async::from_row::<Option<u64>>(row);
     let number = match row {
       Some(row) => {
-        let number: i64 = row;
+        let number: u64 = row;
         number
       },
       None => {
@@ -907,10 +909,10 @@ impl Vermilion {
           .await
           .unwrap()
           .unwrap();
-        let max = mysql_async::from_row::<Option<i64>>(row);
+        let max = mysql_async::from_row::<Option<u64>>(row);
         match max {
           Some(max) => {
-            let number: i64 = max;
+            let number: u64 = max;
             number
           },
           None => {
@@ -923,10 +925,10 @@ impl Vermilion {
     Ok(number)
   }
 
-  pub(crate) async fn get_needed_inscription_numbers(status_vector: Arc<Mutex<Vec<InscriptionNumberStatus>>>) -> Vec<i64> {
+  pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
     let mut status_vector = status_vector.lock().await;
-    let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.inscription_number).unwrap().inscription_number;
-    let mut needed_inscription_numbers: Vec<i64> = Vec::new();
+    let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.sequence_number).unwrap().sequence_number;
+    let mut needed_inscription_numbers: Vec<u64> = Vec::new();
     //Find start of needed numbers
     let mut pending_count=0;
     let mut unknown_count=0;
@@ -935,7 +937,7 @@ impl Vermilion {
     let mut success_count=0;
     for status in status_vector.iter() {
       if status.status == "UNKNOWN" || status.status == "ERROR" || status.status == "NOT_FOUND" {
-        needed_inscription_numbers.push(status.inscription_number);
+        needed_inscription_numbers.push(status.sequence_number);
       }
       if status.status == "PENDING" {
         pending_count = pending_count + 1;
@@ -968,13 +970,13 @@ impl Vermilion {
     }
     //Mark as pending
     for number in needed_inscription_numbers.clone() {
-      match status_vector.iter_mut().find(|status| status.inscription_number == number) {
+      match status_vector.iter_mut().find(|status| status.sequence_number == number) {
         Some(status) => {
           status.status = "PENDING".to_string();
         },
         None => {
-          let status = InscriptionNumberStatus{
-            inscription_number: number,
+          let status = SequenceNumberStatus{
+            sequence_number: number,
             status: "PENDING".to_string(),
           };
           status_vector.push(status);
@@ -1385,6 +1387,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_transaction: row.get("genesis_transaction").unwrap(),
         location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
+        sequence_number: row.get("sequence_number").unwrap(),
         offset: row.get("offset").unwrap(),
         output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
@@ -1416,6 +1419,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_transaction: row.get("genesis_transaction").unwrap(),
         location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
+        sequence_number: row.get("sequence_number").unwrap(),
         offset: row.get("offset").unwrap(),
         output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
