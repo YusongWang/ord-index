@@ -276,7 +276,14 @@ impl Vermilion {
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_timing_vector = timing_vector.clone();
-        let fetcher = fetcher::Fetcher::new(&options).unwrap();//Need a new fetcher for each thread
+        let fetcher =  match fetcher::Fetcher::new(&options) {
+          Ok(fetcher) => fetcher,
+          Err(e) => {
+            println!("Error creating fetcher: {:?}, waiting a minute", e);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+          }
+        };//Need a new fetcher for each thread
         tokio::task::spawn(async move {
           let t1 = Instant::now();
           let _permit = permit;
@@ -1035,18 +1042,18 @@ impl Vermilion {
     }
     let count = relevant_timings.last().unwrap().inscription_end - relevant_timings.first().unwrap().inscription_start+1;
     let total_time = relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start);
-    println!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
-    println!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
-    println!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
-    println!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
-    println!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
-    println!("Get id time avg per thread: {:?}", get_id_total/n_threads);
-    println!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
-    println!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
-    println!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
-    println!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
-    println!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
-    println!("--Locking time avg per thread: {:?}", locking_total/n_threads);
+    log::debug!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
+    log::debug!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
+    log::debug!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
+    log::debug!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
+    log::debug!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
+    log::debug!("Get id time avg per thread: {:?}", get_id_total/n_threads);
+    log::debug!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
+    log::debug!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
+    log::debug!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
+    log::debug!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
+    log::debug!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
+    log::debug!("--Locking time avg per thread: {:?}", locking_total/n_threads);
 
     //Remove printed timings
     let to_remove = BTreeSet::from_iter(relevant_timings);
