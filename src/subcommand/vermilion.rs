@@ -1,6 +1,5 @@
 use super::*;
 use axum_server::Handle;
-use crate::envelope::Envelope;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -221,7 +220,7 @@ impl Vermilion {
     println!("Inscription Indexer Stopped");
 
     //Wait for other threads to finish before exiting
-    vermilion_server_thread.join().unwrap();
+    // vermilion_server_thread.join().unwrap();
     ordinals_server_thread.join().unwrap();
     address_indexer_thread.join().unwrap();
     Ok(Box::new(Empty {}) as Box<dyn Output>)
@@ -1183,7 +1182,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn set_header<B>(mut response: Response<B>) -> Response<B> {
+  async fn set_header<B>(response: Response<B>) -> Response<B> {
     //response.headers_mut().insert("cache-control", "public, max-age=31536000, immutable".parse().unwrap());
     response
   }
