@@ -104,7 +104,9 @@ pub struct Metadata {
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
-  is_json: bool
+  is_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -234,6 +236,7 @@ impl Vermilion {
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str());
+      let start_number_override = config.start_number_override;
       let s3_config = aws_config::from_env().load().await;
       let s3client = s3::Client::new(&s3_config);
       let s3_bucket_name = config.s3_bucket_name.unwrap();
@@ -246,7 +249,11 @@ impl Vermilion {
       Self::create_metadata_table(&pool).await.unwrap();      
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
-      let start_number = Self::get_start_number(&pool).await.unwrap();      
+      let start_number = match start_number_override {
+        Some(start_number_override) => start_number_override,
+        None => Self::get_last_number(&pool).await.unwrap() + 1
+      };
+      println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number-1, start_number);
       println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number)-1, std::cmp::max(s3_upload_start_number, start_number));
       let initial = InscriptionNumberStatus {
         inscription_number: start_number,
@@ -477,7 +484,7 @@ impl Vermilion {
             continue;
           }
 
-          let txs = match fetcher.get_transactions(transfers.clone().into_iter().map(|(id, satpoint)| satpoint.outpoint.txid).collect()).await {
+          let txs = match fetcher.get_transactions(transfers.clone().into_iter().map(|(_id, satpoint)| satpoint.outpoint.txid).collect()).await {
             Ok(txs) => {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
@@ -714,6 +721,16 @@ impl Vermilion {
     };
   }
 
+  fn is_bitmap_style(input: &str) -> bool {
+    let pattern = r"^[a-zA-Z0-9]+[.][a-zA-Z0-9]+$";
+    let re = regex::Regex::new(pattern).unwrap();
+    re.is_match(input)
+  }
+  
+  fn is_recursive(input: &str) -> bool {
+    input.contains("/content")
+  }
+
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -769,6 +786,14 @@ impl Vermilion {
         false
       }
     };
+    let is_bitmap_style = match text.clone() {
+      Some(text) => Self::is_bitmap_style(&text),
+      None => false
+    };
+    let is_recursive = match text.clone() {
+      Some(text) => Self::is_recursive(&text),
+      None => false
+    };
     let metadata = Metadata {
       id: inscription_id.to_string(),
       content_length: content_length,
@@ -784,7 +809,9 @@ impl Vermilion {
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256,
       text: text,
-      is_json: is_json
+      is_json: is_json,
+      is_bitmap_style: is_bitmap_style,
+      is_recursive: is_recursive
     };
     Ok(metadata)
   }
@@ -808,6 +835,8 @@ impl Vermilion {
           sha256 varchar(64),
           text mediumtext,
           is_json boolean,
+          is_bitmap_style boolean,
+          is_recursive boolean,
           INDEX index_id (id),
           INDEX index_number (number),
           INDEX index_block (genesis_height),
@@ -820,10 +849,11 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json)
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_bitmap_style, is_recursive)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_bitmap_style, :is_recursive)
         ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-        location=VALUES(location), number=VALUES(number), offset=VALUES(offset), output_transaction=VALUES(output_transaction), sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json)",
+        location=VALUES(location), number=VALUES(number), offset=VALUES(offset), output_transaction=VALUES(output_transaction), sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), 
+        is_json=VALUES(is_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
           "content_length" => &metadata.content_length,
@@ -839,7 +869,9 @@ impl Vermilion {
           "timestamp" => &metadata.timestamp,
           "sha256" => &metadata.sha256,
           "text" => &metadata.text,
-          "is_json" => &metadata.is_json
+          "is_json" => &metadata.is_json,
+          "is_bitmap_style" => &metadata.is_bitmap_style,
+          "is_recursive" => &metadata.is_recursive
       })
     ).await;
     let result = tx.commit().await;
@@ -852,7 +884,7 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn get_start_number(pool: &mysql_async::Pool) -> Result<i64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<i64, Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn().await.unwrap();
     let row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
       .await
@@ -865,7 +897,7 @@ impl Vermilion {
     let number = match row {
       Some(row) => {
         let number: i64 = row;
-        number+1
+        number
       },
       None => {
         let row = conn.query_iter("select max(number) from ordinals")
@@ -879,7 +911,7 @@ impl Vermilion {
         match max {
           Some(max) => {
             let number: i64 = max;
-            number+1
+            number
           },
           None => {
             0
@@ -887,7 +919,6 @@ impl Vermilion {
         }
       }
     };
-    println!("Inscription numbers in db fully populated up to: {:?}, starting metadata upload from {:?}", number-1, number);
 
     Ok(number)
   }
@@ -1360,7 +1391,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap()
+        is_json: row.get("is_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
       }
     );
     let result = result.await.unwrap().pop().unwrap();
@@ -1389,7 +1422,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap()
+        is_json: row.get("is_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
       }
     );
     let result = result.await.unwrap().pop().unwrap();
@@ -1632,13 +1667,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       CREATE TABLE weights as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
-                 max(is_json) as is_json
+                 max(is_json) as is_json,
+                 max(is_bitmap_style) as is_bitmap_style
           from ordinals group by sha256
         ) a
       ) b;
@@ -1648,13 +1684,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_new;
       CREATE TABLE weights_new as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
-                 max(is_json) as is_json
+                 max(is_json) as is_json,
+                 max(is_bitmap_style) as is_bitmap_style
           from ordinals group by sha256
         ) a
       ) b;
@@ -1674,64 +1711,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         Err(Box::new(error))
       }
     }
-  }
-
-  //Deprecated DB functions
-  async fn get_ordinal_content_from_db(pool: mysql_async::Pool, inscription_id: String) -> Content {
-    let mut conn = Self::get_conn(pool).await;
-    let content: Content = conn.exec_map(
-      "SELECT content, content_type FROM ordinals WHERE id=:id LIMIT 1", 
-      params! {
-        "id" => inscription_id
-      },
-      |mut row: mysql_async::Row| Content {
-        content: row.get("content").unwrap(),
-        content_type: row.take("content_type").unwrap()
-      }
-    )
-    .await
-    .unwrap()
-    .pop()
-    .unwrap();
-    content
-  }
-
-  async fn get_ordinal_content_by_number_from_db(pool: mysql_async::Pool, number: i64) -> Content {
-    let mut conn = Self::get_conn(pool).await;
-    let content: Content = conn.exec_map(
-      "SELECT content, content_type FROM ordinals WHERE number=:number LIMIT 1", 
-      params! {
-        "number" => number
-      },
-      |mut row: mysql_async::Row| Content {
-        content: row.get("content").unwrap(),
-        content_type: row.take("content_type").unwrap()
-      }
-    )
-    .await
-    .unwrap()
-    .pop()
-    .unwrap();
-    content
-  }
-
-  async fn get_ordinal_content_by_sha256_from_db(pool: mysql_async::Pool, sha256: String) -> Content {
-    let mut conn = Self::get_conn(pool).await;
-    let content: Content = conn.exec_map(
-      "SELECT content, content_type FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
-      params! {
-        "sha256" => sha256
-      },
-      |mut row: mysql_async::Row| Content {
-        content: row.get("content").unwrap(),
-        content_type: row.take("content_type").unwrap()
-      }
-    )
-    .await
-    .unwrap()
-    .pop()
-    .unwrap();
-    content
   }
 
 }

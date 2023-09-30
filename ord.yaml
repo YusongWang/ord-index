@@ -12,6 +12,9 @@ hidden:
 # DB must already exist, tables will be automatically created
 db_connection_string: mysql://username:password@localhost:3306/database_name
 
+# if you want to reindex (i.e. new db/new db format/new s3 bucket), this will setting will start the indexer from the desired number, rather than the last populated number in db
+# start_number_override: 0
+
 # AWS S3 bucket name
 s3_bucket_name: vermilion-ordinals
 
