@@ -122,6 +122,34 @@ pub struct Transfer {
 }
 
 #[derive(Clone, Serialize)]
+pub struct TransferWithMetadata {
+  id: String,
+  block_number: i64,
+  block_timestamp: i64,
+  satpoint: String,
+  transaction: String,
+  address: String,
+  is_genesis: bool,
+  content_length: Option<i64>,
+  content_type: Option<String>,
+  genesis_fee: i64,
+  genesis_height: i64,
+  genesis_transaction: String,
+  location: String,
+  number: i64,
+  sequence_number: Option<u64>,
+  offset: i64,
+  output_transaction: String,
+  sat: Option<i64>,
+  timestamp: i64,
+  sha256: Option<String>,
+  text: Option<String>,
+  is_json: bool,
+  is_bitmap_style: Option<bool>,
+  is_recursive: Option<bool>
+}
+
+#[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
   content_type: Option<String>
@@ -1323,7 +1351,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = Self::get_inscriptions_by_address(server_config.pool, address).await;
+    let inscriptions: Vec<TransferWithMetadata> = Self::get_inscriptions_by_address(server_config.pool, address).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
@@ -1600,7 +1628,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> Vec<Transfer> {
     let mut conn = Self::get_conn(pool).await;
     let transfers = conn.exec_map(
-      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
       params! {
         "number" => number
       },
@@ -1617,21 +1645,38 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     transfers
   }
 
-  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<Transfer> {
+  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<TransferWithMetadata> {
     let mut conn = Self::get_conn(pool).await;
     let transfers = conn.exec_map(
-      "select * from addresses where address=:address", 
+      "select a.*, o.* from addresses a left join ordinals o on a.id=o.id where a.address=:address",
       params! {
         "address" => address
       },
-      |row: mysql_async::Row| Transfer {
+      |mut row: mysql_async::Row| TransferWithMetadata {
         id: row.get("id").unwrap(),
         block_number: row.get("block_number").unwrap(),
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
         transaction: row.get("transaction").unwrap(),
         address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
+        is_genesis: row.get("is_genesis").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(),
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        location: row.get("location").unwrap(),
+        number: row.get("number").unwrap(),
+        sequence_number: row.take("sequence_number").unwrap(),
+        offset: row.get("offset").unwrap(),
+        output_transaction: row.get("output_transaction").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
+        is_recursive: row.take("is_recursive").unwrap()
       }
     ).await.unwrap();
     transfers
