@@ -331,7 +331,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                println!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::info!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 for l in needed_numbers.clone() {                  
@@ -504,7 +504,7 @@ impl Vermilion {
           // make sure block is indexed before requesting transfers
           let indexed_height = index.get_blocks_indexed().unwrap();
           if height > indexed_height {
-            println!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
+            log::info!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
           }
