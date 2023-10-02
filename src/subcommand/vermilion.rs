@@ -274,7 +274,7 @@ impl Vermilion {
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).await.unwrap();
-      Self::create_procedure_log(&pool).await.unwrap();
+      Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
       let start_number = match start_number_override {
