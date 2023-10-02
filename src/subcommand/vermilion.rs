@@ -273,7 +273,8 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
-      Self::create_metadata_table(&pool).await.unwrap();      
+      Self::create_metadata_table(&pool).await.unwrap();
+      Self::create_procedure_log_table(&pool).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
       let start_number = match start_number_override {
@@ -1690,18 +1691,24 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       r#"CREATE PROCEDURE update_editions()
       BEGIN
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
+      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
       CREATE TABLE editions as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE", now(), found_rows());
       CREATE INDEX idx_id ON editions (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX", now(), found_rows());
       ELSE
       DROP TABLE IF EXISTS editions_new;
+      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_NEW", now());
       CREATE TABLE editions_new as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_NEW", now(), found_rows());
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
       RENAME TABLE editions to editions_old, editions_new to editions;
       DROP TABLE IF EXISTS editions_old;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await.unwrap();
@@ -1724,6 +1731,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       r#"CREATE PROCEDURE update_weights()
       BEGIN
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE", now());
       CREATE TABLE weights as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
         select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style) as weight from (
@@ -1737,9 +1745,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
           from ordinals group by sha256
         ) a
       ) b;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE", now(), found_rows());
       CREATE INDEX idx_band_start ON weights (band_start);
       CREATE INDEX idx_band_end ON weights (band_end);
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
       ELSE
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW", now());
       DROP TABLE IF EXISTS weights_new;
       CREATE TABLE weights_new as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
@@ -1754,10 +1765,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
           from ordinals group by sha256
         ) a
       ) b;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW", now(), found_rows());
       CREATE INDEX idx_band_start ON weights_new (band_start);
       CREATE INDEX idx_band_end ON weights_new (band_end);
       RENAME TABLE weights to weights_old, weights_new to weights;
       DROP TABLE IF EXISTS weights_old;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
@@ -1770,6 +1783,19 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         Err(Box::new(error))
       }
     }
+  }
+
+  async fn create_procedure_log(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS proc_log() (
+        id int unsigned auto_increment primary key,
+        proc_name varchar(40),
+        step_name varchar(40),
+        ts timestamp,
+        rows_returned int
+      )").await.unwrap();
+    Ok(())
   }
 
 }
