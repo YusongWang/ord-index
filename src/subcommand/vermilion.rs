@@ -1788,7 +1788,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn create_procedure_log(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS proc_log() (
+      r"CREATE TABLE IF NOT EXISTS proc_log (
         id int unsigned auto_increment primary key,
         proc_name varchar(40),
         step_name varchar(40),
