@@ -212,7 +212,7 @@ pub struct ApiServerConfig {
 }
 
 impl Vermilion {
-  pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> SubcommandResult {
+  pub(crate) fn run(self, options: Options) -> SubcommandResult {
     //1. Run Vermilion Server
     println!("Vermilion Server Starting");
     let vermilion_server_clone = self.clone();
@@ -233,6 +233,9 @@ impl Vermilion {
 
     //2. Run Ordinals Server
     println!("Ordinals Server Starting");
+    let index = Arc::new(Index::open(&options)?);
+    let handle = axum_server::Handle::new();
+    LISTENERS.lock().unwrap().push(handle.clone());
     let ordinals_server_clone = self.clone();
     let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
 

@@ -69,10 +69,7 @@ impl Subcommand {
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
       Self::Vermilion(vermilion) => {        
-        let index = Arc::new(Index::open(&options)?);
-        let handle = axum_server::Handle::new();
-        LISTENERS.lock().unwrap().push(handle.clone());
-        vermilion.run(options, index, handle)
+        vermilion.run(options)
       }
     }
   }
