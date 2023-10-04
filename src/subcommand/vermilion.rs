@@ -110,6 +110,22 @@ pub struct Metadata {
   is_recursive: Option<bool>
 }
 
+pub struct SatMetadata {
+  number: u64,
+  decimal: String,
+  degree: String,
+  name: String,
+  block: u64,
+  cycle: u64,
+  epoch: u64,
+  period: u64,
+  offset: u64,
+  rarity: String,
+  percentile: String,
+  satpoint: String,
+  timestamp: i64
+}
+
 #[derive(Clone, Serialize)]
 pub struct Transfer {
   id: String,
@@ -335,7 +351,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                log::info!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::warn!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 for l in needed_numbers.clone() {                  
@@ -415,19 +431,27 @@ impl Vermilion {
           let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
           let mut retrieval = Duration::from_millis(0);
           let mut metadata_vec: Vec<Metadata> = Vec::new();
+          let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
           for (inscription_id, inscription) in id_inscriptions {
             let t0 = Instant::now();
-            let metadata: Metadata = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
-            metadata_vec.push(metadata.clone());
+            let (metadata, sat_metadata) = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
+            metadata_vec.push(metadata);            
+            match sat_metadata {
+              Some(sat_metadata) => {
+                sat_metadata_vec.push(sat_metadata);
+              },
+              None => {}                
+            }
             let t1 = Instant::now();            
             retrieval += t1.duration_since(t0);
           }
           //4.1 Insert metadata
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec).await;
+          let sat_insert_result = Self::bulk_insert_sat_metadata(&cloned_pool.clone(), sat_metadata_vec).await;
           //4.2 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() {
             println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
@@ -508,7 +532,7 @@ impl Vermilion {
           // make sure block is indexed before requesting transfers
           let indexed_height = index.get_blocks_indexed().unwrap();
           if height > indexed_height {
-            log::info!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
+            log::warn!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
           }
@@ -771,7 +795,7 @@ impl Vermilion {
     input.contains("/content")
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<Metadata> {
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
     let entry = index
       .get_inscription_entry(inscription_id)
       .unwrap()
@@ -854,7 +878,29 @@ impl Vermilion {
       is_bitmap_style: Some(is_bitmap_style),
       is_recursive: Some(is_recursive)
     };
-    Ok(metadata)
+    let sat_metadata = match entry.sat {
+      Some(sat) => {
+        let sat_blocktime = index.block_time(sat.height())?;
+        let sat_metadata = SatMetadata {
+          number: sat.0,
+          decimal: sat.decimal().to_string(),
+          degree: sat.degree().to_string(),
+          name: sat.name(),
+          block: sat.height().0,
+          cycle: sat.cycle(),
+          epoch: sat.epoch().0,
+          period: sat.period(),
+          offset: sat.third(),
+          rarity: sat.rarity().to_string(),
+          percentile: sat.percentile(),
+          satpoint: satpoint.to_string(),
+          timestamp: sat_blocktime.timestamp().timestamp()
+        };
+        Some(sat_metadata)
+      },
+      None => None
+    };
+    Ok((metadata, sat_metadata))
   }
 
   pub(crate) async fn create_metadata_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
@@ -884,6 +930,30 @@ impl Vermilion {
           INDEX index_sequence_number (sequence_number),
           INDEX index_block (genesis_height),
           INDEX index_sha256 (sha256)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn create_sat_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS sat (
+        number bigint not null primary key,
+        sat_decimal text,
+        degree text,
+        name text,
+        block bigint unsigned,
+        cycle bigint unsigned,
+        epoch bigint unsigned,
+        period bigint unsigned,
+        offset bigint unsigned,
+        rarity varchar(10),
+        percentile text,
+        satpoint text,
+        timestamp bigint,
+        INDEX index_number (number),
+        INDEX index_block (block),
+        INDEX index_rarity (rarity)
       )").await.unwrap();
     Ok(())
   }
@@ -923,6 +993,40 @@ impl Vermilion {
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error bulk inserting ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) async fn bulk_insert_sat_metadata(pool: &mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO sat (number, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, satpoint, timestamp)
+        VALUES (:number, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :satpoint, :timestamp)
+        ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch), 
+        period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), satpoint=VALUES(satpoint), timestamp=VALUES(timestamp)",
+        metadata_vec.iter().map(|metadata| params! {
+          "number" => &metadata.number,
+          "sat_decimal" => &metadata.decimal,
+          "degree" => &metadata.degree,
+          "name" => &metadata.name,
+          "block" => &metadata.block,
+          "cycle" => &metadata.cycle,
+          "epoch" => &metadata.epoch,
+          "period" => &metadata.period,
+          "offset" => &metadata.offset,
+          "rarity" => &metadata.rarity,
+          "percentile" => &metadata.percentile,
+          "satpoint" => &metadata.satpoint,
+          "timestamp" => &metadata.timestamp
+      })
+    ).await;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting ordinal sat metadata: {}", error);
         Err(Box::new(error))
       }
     }
