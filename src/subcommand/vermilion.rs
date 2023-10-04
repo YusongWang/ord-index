@@ -929,7 +929,8 @@ impl Vermilion {
           INDEX index_number (number),
           INDEX index_sequence_number (sequence_number),
           INDEX index_block (genesis_height),
-          INDEX index_sha256 (sha256)
+          INDEX index_sha256 (sha256),
+          INDEX index_sat (sat)
       )").await.unwrap();
     Ok(())
   }
