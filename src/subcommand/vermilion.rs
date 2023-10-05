@@ -1079,6 +1079,7 @@ impl Vermilion {
   pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
     let mut status_vector = status_vector.lock().await;
     let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.sequence_number).unwrap().sequence_number;
+    status_vector.sort_by_key(|status| status.sequence_number);
     let mut needed_inscription_numbers: Vec<u64> = Vec::new();
     //Find start of needed numbers
     let mut pending_count=0;
