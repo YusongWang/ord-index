@@ -110,8 +110,9 @@ pub struct Metadata {
   is_recursive: Option<bool>
 }
 
+#[derive(Clone, Serialize)]
 pub struct SatMetadata {
-  number: u64,
+  sat: u64,
   decimal: String,
   degree: String,
   name: String,
@@ -293,6 +294,7 @@ impl Vermilion {
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).await.unwrap();
+      Self::create_sat_table(&pool).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
@@ -663,6 +665,8 @@ impl Vermilion {
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
           .route("/inscription_transfers_number/:number", get(Self::inscription_transfers_number))
           .route("/inscriptions_in_address/:address", get(Self::inscriptions_in_address))
+          .route("/inscriptions_on_sat/:sat", get(Self::inscriptions_on_sat))
+          .route("/sat_metadata/:sat", get(Self::sat_metadata))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -882,7 +886,7 @@ impl Vermilion {
       Some(sat) => {
         let sat_blocktime = index.block_time(sat.height())?;
         let sat_metadata = SatMetadata {
-          number: sat.0,
+          sat: sat.0,
           decimal: sat.decimal().to_string(),
           degree: sat.degree().to_string(),
           name: sat.name(),
@@ -939,7 +943,7 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS sat (
-        number bigint not null primary key,
+        sat bigint not null primary key,
         sat_decimal text,
         degree text,
         name text,
@@ -1003,12 +1007,12 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO sat (number, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, satpoint, timestamp)
-        VALUES (:number, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :satpoint, :timestamp)
+      r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, satpoint, timestamp)
+        VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :satpoint, :timestamp)
         ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch), 
         period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), satpoint=VALUES(satpoint), timestamp=VALUES(timestamp)",
         metadata_vec.iter().map(|metadata| params! {
-          "number" => &metadata.number,
+          "sat" => &metadata.sat,
           "sat_decimal" => &metadata.decimal,
           "degree" => &metadata.degree,
           "name" => &metadata.name,
@@ -1467,6 +1471,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
+  async fn inscriptions_on_sat(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<Metadata> = Self::get_inscriptions_on_sat(server_config.pool, sat).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    )
+  }
+
+  async fn sat_metadata(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let sat_metadata = Self::get_sat_metadata(server_config.pool, sat).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(sat_metadata),
+    )
+  }
+
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -1789,6 +1809,65 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       }
     ).await.unwrap();
     transfers
+  }
+
+  async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> Vec<Metadata> {
+    let mut conn = Self::get_conn(pool).await;
+    let result = conn.exec_map(
+      "SELECT * FROM ordinals WHERE sat=:sat", 
+      params! {
+        "sat" => sat
+      },
+      |mut row: mysql_async::Row| Metadata {
+        id: row.get("id").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(), 
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        location: row.get("location").unwrap(),
+        number: row.get("number").unwrap(),
+        sequence_number: row.get("sequence_number").unwrap(),
+        offset: row.get("offset").unwrap(),
+        output_transaction: row.get("output_transaction").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
+      }
+    );
+    let result = result.await.unwrap();
+    result
+  }
+
+  async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> SatMetadata {
+    let mut conn = Self::get_conn(pool).await;
+    let result = conn.exec_map(
+      "SELECT * FROM sat WHERE sat=:sat", 
+      params! {
+        "sat" => sat
+      },
+      |row: mysql_async::Row| SatMetadata {
+        sat: row.get("sat").unwrap(),
+        decimal: row.get("sat_decimal").unwrap(),
+        degree: row.get("degree").unwrap(),
+        name: row.get("name").unwrap(),
+        block: row.get("block").unwrap(),
+        cycle: row.get("cycle").unwrap(),
+        epoch: row.get("epoch").unwrap(),
+        period: row.get("period").unwrap(),
+        offset: row.get("offset").unwrap(),
+        rarity: row.get("rarity").unwrap(),
+        percentile: row.get("percentile").unwrap(),
+        satpoint: row.get("satpoint").unwrap(),
+        timestamp: row.get("timestamp").unwrap()
+      }
+    );
+    let result = result.await.unwrap().pop().unwrap();
+    result
   }
 
   async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
