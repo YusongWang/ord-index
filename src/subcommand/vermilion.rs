@@ -343,7 +343,7 @@ impl Vermilion {
           let mut should_sleep = false;
           let first_number = needed_numbers[0];
           let mut last_number = needed_numbers[needed_numbers.len()-1];
-          log::warn!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
+          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
 
           //1. Get ids
           let t2 = Instant::now();
@@ -355,7 +355,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                log::warn!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::info!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 let mut locked_status_vector = status_vector.lock().await;
@@ -1125,7 +1125,7 @@ impl Vermilion {
         success_count = success_count + 1;
       }
     }
-    log::warn!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();
     needed_inscription_numbers.sort();
