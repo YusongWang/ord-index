@@ -1079,7 +1079,6 @@ impl Vermilion {
   pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
     let mut status_vector = status_vector.lock().await;
     let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.sequence_number).unwrap().sequence_number;
-    status_vector.sort_by_key(|status| status.sequence_number);
     let mut needed_inscription_numbers: Vec<u64> = Vec::new();
     //Find start of needed numbers
     let mut pending_count=0;
@@ -1107,9 +1106,10 @@ impl Vermilion {
         success_count = success_count + 1;
       }
     }
-    log::debug!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
     //Fill in needed numbers
-    let mut needed_length = needed_inscription_numbers.len();    
+    let mut needed_length = needed_inscription_numbers.len();
+    needed_inscription_numbers.sort();
     if needed_length < 1000 {
       let mut i = 0;
       while needed_length < 1000 {        
