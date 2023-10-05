@@ -360,7 +360,7 @@ impl Vermilion {
                 for l in needed_numbers.clone() {                  
                   let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == l).unwrap();
                   if l >= j {
-                    status.status = "NOT_FOUND".to_string();
+                    status.status = "NOT_FOUND_LOCKED".to_string();
                   }                
                 }
                 should_sleep = true;
@@ -466,9 +466,11 @@ impl Vermilion {
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-              if status.status != "NOT_FOUND".to_string() {
+              if status.status != "NOT_FOUND_LOCKED".to_string() {
                 status.status = "SUCCESS".to_string();
-              }              
+              } else if status.status == "NOT_FOUND_LOCKED".to_string() {
+                status.status = "NOT_FOUND".to_string();
+              }
             }
           }
           
@@ -1101,7 +1103,7 @@ impl Vermilion {
       if status.status == "ERROR" {
         error_count = error_count + 1;
       }
-      if status.status == "NOT_FOUND" {
+      if status.status == "NOT_FOUND" || status.status == "NOT_FOUND_LOCKED" {
         not_found_count = not_found_count + 1;
       }
       if status.status == "SUCCESS" {
