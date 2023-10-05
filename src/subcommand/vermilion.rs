@@ -106,6 +106,7 @@ pub struct Metadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
+  is_maybe_json: bool,
   is_bitmap_style: Option<bool>,
   is_recursive: Option<bool>
 }
@@ -162,6 +163,7 @@ pub struct TransferWithMetadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
+  is_maybe_json: bool,
   is_bitmap_style: Option<bool>,
   is_recursive: Option<bool>
 }
@@ -803,6 +805,12 @@ impl Vermilion {
     input.contains("/content")
   }
 
+  fn is_maybe_json(input: &str) -> bool {  
+      let first_char = input.chars().next().unwrap();
+      let last_char = input.chars().last().unwrap();  
+      first_char == '{' && last_char == '}'
+  }
+
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -858,6 +866,10 @@ impl Vermilion {
         false
       }
     };
+    let is_maybe_json = match text.clone() {
+      Some(text) => Self::is_maybe_json(&text),
+      None => false
+    };
     let is_bitmap_style = match text.clone() {
       Some(text) => Self::is_bitmap_style(&text),
       None => false
@@ -883,6 +895,7 @@ impl Vermilion {
       sha256: sha256,
       text: text,
       is_json: is_json,
+      is_maybe_json: is_maybe_json,
       is_bitmap_style: Some(is_bitmap_style),
       is_recursive: Some(is_recursive)
     };
@@ -931,6 +944,7 @@ impl Vermilion {
           sha256 varchar(64),
           text mediumtext,
           is_json boolean,
+          is_maybe_json boolean,
           is_bitmap_style boolean,
           is_recursive boolean,
           INDEX index_id (id),
@@ -971,11 +985,11 @@ impl Vermilion {
     let mut conn = pool.get_conn().await.unwrap();
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, sequence_number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_bitmap_style, is_recursive)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :sequence_number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_bitmap_style, :is_recursive)
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, sequence_number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :sequence_number, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
         ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
         location=VALUES(location), number=VALUES(number), sequence_number=VALUES(sequence_number), offset=VALUES(offset), output_transaction=VALUES(output_transaction), sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), 
-        is_json=VALUES(is_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
+        is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
           "content_length" => &metadata.content_length,
@@ -993,6 +1007,7 @@ impl Vermilion {
           "sha256" => &metadata.sha256,
           "text" => &metadata.text,
           "is_json" => &metadata.is_json,
+          "is_maybe_json" => &metadata.is_maybe_json,
           "is_bitmap_style" => &metadata.is_bitmap_style,
           "is_recursive" => &metadata.is_recursive
       })
@@ -1567,6 +1582,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.take("is_recursive").unwrap()
       }
@@ -1599,6 +1615,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
         is_bitmap_style: row.get("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
@@ -1809,6 +1826,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.take("is_recursive").unwrap()
       }
@@ -1840,6 +1858,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
         is_bitmap_style: row.get("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
@@ -1926,14 +1945,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE", now());
       CREATE TABLE weights as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
                  max(is_json) as is_json,
-                 max(is_bitmap_style) as is_bitmap_style
+                 max(is_bitmap_style) as is_bitmap_style,
+                 max(is_maybe_json) as is_maybe_json
           from ordinals group by sha256
         ) a
       ) b;
@@ -1946,14 +1966,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_new;
       CREATE TABLE weights_new as
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style) as weight from (
+        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
           select sha256, 
                  min(number) as first_number, 
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
                  max(is_json) as is_json,
-                 max(is_bitmap_style) as is_bitmap_style
+                 max(is_bitmap_style) as is_bitmap_style,
+                 max(is_maybe_json) as is_maybe_json
           from ordinals group by sha256
         ) a
       ) b;
