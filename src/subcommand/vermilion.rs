@@ -356,8 +356,8 @@ impl Vermilion {
                 log::warn!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
+                let mut locked_status_vector = status_vector.lock().await;
                 for l in needed_numbers.clone() {                  
-                  let mut locked_status_vector = status_vector.lock().await;
                   let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == l).unwrap();
                   if l >= j {
                     status.status = "NOT_FOUND".to_string();
@@ -378,10 +378,12 @@ impl Vermilion {
               Err(error) => {
                 println!("Error getting transactions {}-{}: {:?}", first_number, last_number, error);
                 let status_vector = cloned_status_vector.clone();
-                for j in needed_numbers.clone() {                  
+                { //Enclosing braces to drop the mutex so sleep doesn't block
                   let mut locked_status_vector = status_vector.lock().await;
-                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-                  status.status = "ERROR".to_string();
+                  for j in needed_numbers.clone() {                  
+                    let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
+                    status.status = "ERROR".to_string();
+                  }
                 }
                 println!("error string: {}", error.to_string());
                 if  error.to_string().contains("Failed to fetch raw transaction") || 
