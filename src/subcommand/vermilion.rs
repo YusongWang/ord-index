@@ -956,7 +956,7 @@ impl Vermilion {
         percentile text,
         satpoint text,
         timestamp bigint,
-        INDEX index_number (number),
+        INDEX index_sat (sat),
         INDEX index_block (block),
         INDEX index_rarity (rarity)
       )").await.unwrap();
