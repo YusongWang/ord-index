@@ -672,6 +672,7 @@ impl Vermilion {
           .route("/inscription_transfers_number/:number", get(Self::inscription_transfers_number))
           .route("/inscriptions_in_address/:address", get(Self::inscriptions_in_address))
           .route("/inscriptions_on_sat/:sat", get(Self::inscriptions_on_sat))
+          .route("/inscriptions_in_sat_block/:block", get(Self::inscriptions_in_sat_block))
           .route("/sat_metadata/:sat", get(Self::sat_metadata))
           .layer(map_response(Self::set_header))
           .layer(
@@ -805,10 +806,14 @@ impl Vermilion {
     input.contains("/content")
   }
 
+  //todo: make more expansive to capture faulty json
   fn is_maybe_json(input: &str) -> bool {  
-      let first_char = input.chars().next().unwrap();
-      let last_char = input.chars().last().unwrap();  
-      first_char == '{' && last_char == '}'
+    if input.len() < 2 {
+      return false; // The string is too short
+    }
+    let first_char = input.chars().next().unwrap();
+    let last_char = input.chars().last().unwrap();  
+    first_char == '{' && last_char == '}'
   }
 
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
@@ -1499,6 +1504,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
+  async fn inscriptions_in_sat_block(Path(block): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<Metadata> = Self::get_inscriptions_in_sat_block(server_config.pool, block).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    )
+  }
+
   async fn sat_metadata(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let sat_metadata = Self::get_sat_metadata(server_config.pool, sat).await;
     (
@@ -1840,6 +1853,39 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       "SELECT * FROM ordinals WHERE sat=:sat", 
       params! {
         "sat" => sat
+      },
+      |mut row: mysql_async::Row| Metadata {
+        id: row.get("id").unwrap(),
+        content_length: row.take("content_length").unwrap(),
+        content_type: row.take("content_type").unwrap(), 
+        genesis_fee: row.get("genesis_fee").unwrap(),
+        genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        location: row.get("location").unwrap(),
+        number: row.get("number").unwrap(),
+        sequence_number: row.get("sequence_number").unwrap(),
+        offset: row.get("offset").unwrap(),
+        output_transaction: row.get("output_transaction").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
+      }
+    );
+    let result = result.await.unwrap();
+    result
+  }
+
+  async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> Vec<Metadata> {
+    let mut conn = Self::get_conn(pool).await;
+    let result = conn.exec_map(
+      "select * from ordinals where sat in (select sat from sat where block=:block)", 
+      params! {
+        "block" => block
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
