@@ -1063,7 +1063,7 @@ impl Vermilion {
 
   pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn().await.unwrap();
-    let row = conn.query_iter("select min(previous) from (select number, Lag(number,1) over (order BY number) as previous from ordinals) a where number != previous+1")
+    let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
       .await
       .unwrap()
       .next()
@@ -1077,7 +1077,7 @@ impl Vermilion {
         number
       },
       None => {
-        let row = conn.query_iter("select max(number) from ordinals")
+        let row = conn.query_iter("select max(sequence_number) from ordinals")
           .await
           .unwrap()
           .next()
