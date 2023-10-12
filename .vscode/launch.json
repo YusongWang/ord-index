@@ -10,8 +10,10 @@
       "name": "Debug vermilion",
       "program": "${workspaceFolder}/target/debug/ord",
       "args": [
+        "--config=/home/miltu/ord.yaml",
         "vermilion",
-        "--http-port=1080"
+        "--http-port=1080",
+        "--n-threads=10"
       ],
       "cwd": "${workspaceFolder}"
     },

@@ -1,5 +1,7 @@
 use super::*;
 use axum_server::Handle;
+use image_hasher::HashAlg;
+use image_hasher::HasherConfig;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -126,6 +128,11 @@ pub struct SatMetadata {
   percentile: String,
   satpoint: String,
   timestamp: i64
+}
+
+pub struct ImageHashes {
+  sha256: String,
+  image_phash: String
 }
 
 #[derive(Clone, Serialize)]
@@ -297,6 +304,7 @@ impl Vermilion {
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(&pool).await.unwrap();
       Self::create_sat_table(&pool).await.unwrap();
+      Self::create_image_hash_table(&pool).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
@@ -314,7 +322,7 @@ impl Vermilion {
 
       // every iteration fetches 1k inscriptions
       let time = Instant::now();
-      print!("Starting @ {:?}", time);
+      println!("Starting @ {:?}", time);
       loop {
         let t0 = Instant::now();
         //break if ctrl-c is received
@@ -343,7 +351,7 @@ impl Vermilion {
           let mut should_sleep = false;
           let first_number = needed_numbers[0];
           let mut last_number = needed_numbers[needed_numbers.len()-1];
-          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
+          log::warn!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
 
           //1. Get ids
           let t2 = Instant::now();
@@ -355,7 +363,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                log::info!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::warn!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 let mut locked_status_vector = status_vector.lock().await;
@@ -421,7 +429,7 @@ impl Vermilion {
             .zip(cloned_inscriptions.into_iter())
             .map(|((x, y), z)| (x, y, z))
             .collect();          
-          for (number, inscription_id, inscription) in number_id_inscriptions {
+          for (number, inscription_id, inscription) in number_id_inscriptions.clone() {
             if number < s3_upload_start_number {
                 continue;
             }
@@ -431,20 +439,33 @@ impl Vermilion {
           //4. Get ordinal metadata
           let t5 = Instant::now();
           let status_vector = cloned_status_vector.clone();
-          let cloned_ids = inscription_ids.clone();
-          let cloned_inscriptions = inscriptions.clone();
-          
-          let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
+
           let mut retrieval = Duration::from_millis(0);
           let mut metadata_vec: Vec<Metadata> = Vec::new();
           let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
-          for (inscription_id, inscription) in id_inscriptions {
+          let mut image_hashes_vec: Vec<ImageHashes> = Vec::new();
+          for (number, inscription_id, inscription) in number_id_inscriptions {
             let t0 = Instant::now();
-            let (metadata, sat_metadata) = Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()).unwrap();
+            let (metadata, sat_metadata, image_hashes) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
+                Ok((metadata, sat_metadata, image_hashes)) => (metadata, sat_metadata, image_hashes),
+                Err(error) => {
+                  println!("Error: {} extracting metadata for inscription number: {}. Marking as error", error, number);
+                  let mut locked_status_vector = status_vector.lock().await;
+                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == number).unwrap();
+                  status.status = "ERROR_LOCKED".to_string();
+                  continue;
+                }
+            };
             metadata_vec.push(metadata);            
             match sat_metadata {
               Some(sat_metadata) => {
                 sat_metadata_vec.push(sat_metadata);
+              },
+              None => {}                
+            }
+            match image_hashes {
+              Some(image_hashes) => {
+                image_hashes_vec.push(image_hashes);
               },
               None => {}                
             }
@@ -455,9 +476,10 @@ impl Vermilion {
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec).await;
           let sat_insert_result = Self::bulk_insert_sat_metadata(&cloned_pool.clone(), sat_metadata_vec).await;
+          let hash_insert_result = Self::bulk_insert_image_hashes(&cloned_pool.clone(), image_hashes_vec).await;
           //4.2 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() {
             println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
@@ -468,10 +490,13 @@ impl Vermilion {
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-              if status.status != "NOT_FOUND_LOCKED".to_string() {
+              //_LOCKED state to prevent other threads from changing status before current thread completes
+              if status.status != "NOT_FOUND_LOCKED" || status.status != "ERROR_LOCKED" {
                 status.status = "SUCCESS".to_string();
-              } else if status.status == "NOT_FOUND_LOCKED".to_string() {
+              } else if status.status == "NOT_FOUND_LOCKED" {
                 status.status = "NOT_FOUND".to_string();
+              } else if status.status == "ERROR_LOCKED" {
+                status.status = "ERROR".to_string();
               }
             }
           }
@@ -530,7 +555,7 @@ impl Vermilion {
         let first_height = options.first_inscription_height();
         let db_height = Self::get_start_block(&pool).await.unwrap();
         let mut height = std::cmp::max(first_height, db_height);
-        println!("start height: {:?}", height);
+        println!("Address indexing block start height: {:?}", height);
         loop {
           // break if ctrl-c is received
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -628,6 +653,7 @@ impl Vermilion {
           }
           Self::bulk_insert_transfers(&pool, transfer_vec.clone()).await.unwrap();
           Self::bulk_insert_addresses(&pool, transfer_vec).await.unwrap();
+          log::info!("Address indexer: Indexed block: {:?}", height);
           height += 1;
         }
         println!("Address indexer stopped");
@@ -806,17 +832,28 @@ impl Vermilion {
     input.contains("/content")
   }
 
-  //todo: make more expansive to capture faulty json
-  fn is_maybe_json(input: &str) -> bool {  
-    if input.len() < 2 {
+  fn is_maybe_json(input: &str, content_type: Option<String>) -> bool { 
+    let length = input.len();
+    if length < 2 {
       return false; // The string is too short
     }
+    if content_type.is_some() {
+      let content_type = content_type.unwrap();
+      if !(content_type.contains("json") || content_type.contains("text/plain")) {
+        return false; // The content type is not a text type, don't check for html/svg false positives
+      }
+    }
+    let num_colons = input.chars().filter(|&c| c == ':').count();
+    let num_quotes = input.chars().filter(|&c| c == '"').count();
+    let num_commas = input.chars().filter(|&c| c == ',').count();
+    let ratio = (num_colons as f32 + num_quotes as f32 + num_commas as f32)/ length as f32;
     let first_char = input.chars().next().unwrap();
     let last_char = input.chars().last().unwrap();  
-    first_char == '{' && last_char == '}'
+    first_char == '{' || last_char == '}' || ratio > 0.1
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Option<ImageHashes>)> {
+    let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
       .unwrap()
@@ -825,6 +862,7 @@ impl Vermilion {
       .get_inscription_satpoint_by_id(inscription_id)
       .unwrap()
       .unwrap();
+    let t1 = Instant::now();
     let content_length = match inscription.content_length() {
       Some(content_length) => Some(content_length as i64),
       None => {
@@ -872,7 +910,7 @@ impl Vermilion {
       }
     };
     let is_maybe_json = match text.clone() {
-      Some(text) => Self::is_maybe_json(&text),
+      Some(text) => Self::is_maybe_json(&text, inscription.content_type().map(str::to_string)),
       None => false
     };
     let is_bitmap_style = match text.clone() {
@@ -897,13 +935,14 @@ impl Vermilion {
       output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
       timestamp: entry.timestamp.try_into().unwrap(),
-      sha256: sha256,
+      sha256: sha256.clone(),
       text: text,
       is_json: is_json,
       is_maybe_json: is_maybe_json,
       is_bitmap_style: Some(is_bitmap_style),
       is_recursive: Some(is_recursive)
     };
+    let t2 = Instant::now();
     let sat_metadata = match entry.sat {
       Some(sat) => {
         let sat_blocktime = index.block_time(sat.height())?;
@@ -926,7 +965,49 @@ impl Vermilion {
       },
       None => None
     };
-    Ok((metadata, sat_metadata))
+    let t3 = Instant::now();
+    let image_hashes = match inscription.body() {
+      Some(body) => {
+        let phash = Self::extract_image_hash(body, inscription.content_type().map(str::to_string));
+        match phash {
+          Some(phash) => {
+            let image_hash = ImageHashes {
+              sha256: sha256.unwrap(),
+              image_phash: phash
+            };
+            Some(image_hash)
+          },
+          None => None
+        }
+      },
+      None => None
+    };
+    let t4 = Instant::now();
+    //println!("index: {:?} metadata: {:?} sat: {:?} image_hash: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t4.duration_since(t0));
+    Ok((metadata, sat_metadata, image_hashes))
+  }
+
+  pub(crate) fn extract_image_hash(body: &[u8], content_type: Option<String>) -> Option<String> {
+    match content_type {
+      Some(content_type) => {
+        if !content_type.contains("image") {
+          return None;
+        }
+      },
+      None => {
+        return None;
+      }
+    }
+
+    let hasher = HasherConfig::new().preproc_dct().hash_alg(HashAlg::Mean).to_hasher();
+    let image = match image::load_from_memory(&body) {
+      Ok(image) => image,
+      Err(_) => {
+        return None;
+      }
+    };
+    let hash = hasher.hash_image(&image);
+    Some(hash.to_base64())
   }
 
   pub(crate) async fn create_metadata_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
@@ -982,6 +1063,18 @@ impl Vermilion {
         INDEX index_sat (sat),
         INDEX index_block (block),
         INDEX index_rarity (rarity)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn create_image_hash_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS image_hashes (
+        sha256 varchar(64) not null primary key,
+        image_phash varchar(20),
+        INDEX index_sha256 (sha256),
+        INDEX index_image_phash (image_phash)
       )").await.unwrap();
     Ok(())
   }
@@ -1061,6 +1154,26 @@ impl Vermilion {
     }
   }
 
+  pub(crate) async fn bulk_insert_image_hashes(pool: &mysql_async::Pool, image_hash_vec: Vec<ImageHashes>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = pool.get_conn().await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO image_hashes (sha256, image_phash) VALUES (:sha256, :image_phash) ON DUPLICATE KEY UPDATE image_phash=VALUES(image_phash)",
+      image_hash_vec.iter().map(|image_hashes| params! {
+          "sha256" => &image_hashes.sha256,
+          "image_phash" => &image_hashes.image_phash
+      })
+    ).await;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting image hashes: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
   pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = pool.get_conn().await.unwrap();
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
@@ -1120,7 +1233,7 @@ impl Vermilion {
       if status.status == "UNKNOWN" {
         unknown_count = unknown_count + 1;
       }
-      if status.status == "ERROR" {
+      if status.status == "ERROR" || status.status == "ERROR_LOCKED"  {
         error_count = error_count + 1;
       }
       if status.status == "NOT_FOUND" || status.status == "NOT_FOUND_LOCKED" {
@@ -1166,7 +1279,12 @@ impl Vermilion {
 
   pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>, n_threads: u32) {
     let mut locked_timings = timings.lock().await;
+    // sort & remove incomplete entries    
+    locked_timings.retain(|e| e.inscription_start + 1000 == e.inscription_end);
     locked_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
+    if locked_timings.len() < 1 {
+      return;
+    }
     //First get the relevant entries
     let mut relevant_timings: Vec<IndexerTimings> = Vec::new();
     let mut last = locked_timings.last().unwrap().inscription_start + 1000;
