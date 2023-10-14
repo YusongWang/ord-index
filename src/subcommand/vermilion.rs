@@ -302,15 +302,15 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
-      Self::create_metadata_table(&pool).await.unwrap();
-      Self::create_sat_table(&pool).await.unwrap();
-      Self::create_image_hash_table(&pool).await.unwrap();
+      Self::create_metadata_table(pool.clone()).await.unwrap();
+      Self::create_sat_table(pool.clone()).await.unwrap();
+      Self::create_image_hash_table(pool.clone()).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
-        None => Self::get_last_number(&pool).await.unwrap() + 1
+        None => Self::get_last_number(pool.clone()).await.unwrap() + 1
       };
       println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number.checked_sub(1), start_number);
       println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number).checked_sub(1), std::cmp::max(s3_upload_start_number, start_number));
@@ -474,9 +474,9 @@ impl Vermilion {
           }
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(&cloned_pool.clone(), metadata_vec).await;
-          let sat_insert_result = Self::bulk_insert_sat_metadata(&cloned_pool.clone(), sat_metadata_vec).await;
-          let hash_insert_result = Self::bulk_insert_image_hashes(&cloned_pool.clone(), image_hashes_vec).await;
+          let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
+          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
+          let hash_insert_result = Self::bulk_insert_image_hashes(cloned_pool.clone(), image_hashes_vec).await;
           //4.2 Update status
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() {
@@ -548,12 +548,12 @@ impl Vermilion {
         let config = options.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = Pool::new(url.as_str());
-        Self::create_transfers_table(&pool).await.unwrap();
-        Self::create_address_table(&pool).await.unwrap();
+        Self::create_transfers_table(pool.clone()).await.unwrap();
+        Self::create_address_table(pool.clone()).await.unwrap();
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
         let first_height = options.first_inscription_height();
-        let db_height = Self::get_start_block(&pool).await.unwrap();
+        let db_height = Self::get_start_block(pool.clone()).await.unwrap();
         let mut height = std::cmp::max(first_height, db_height);
         println!("Address indexing block start height: {:?}", height);
         loop {
@@ -651,8 +651,8 @@ impl Vermilion {
             };
             transfer_vec.push(transfer);
           }
-          Self::bulk_insert_transfers(&pool, transfer_vec.clone()).await.unwrap();
-          Self::bulk_insert_addresses(&pool, transfer_vec).await.unwrap();
+          Self::bulk_insert_transfers(pool.clone(), transfer_vec.clone()).await.unwrap();
+          Self::bulk_insert_addresses(pool.clone(), transfer_vec).await.unwrap();
           log::info!("Address indexer: Indexed block: {:?}", height);
           height += 1;
         }
@@ -1010,8 +1010,8 @@ impl Vermilion {
     Some(hash.to_base64())
   }
 
-  pub(crate) async fn create_metadata_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
@@ -1043,8 +1043,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_sat_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS sat (
         sat bigint not null primary key,
@@ -1067,8 +1067,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_image_hash_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn create_image_hash_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS image_hashes (
         sha256 varchar(64) not null primary key,
@@ -1079,8 +1079,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_metadata(pool: &mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, sequence_number, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
@@ -1120,8 +1120,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_sat_metadata(pool: &mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, satpoint, timestamp)
@@ -1154,8 +1154,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_image_hashes(pool: &mysql_async::Pool, image_hash_vec: Vec<ImageHashes>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn bulk_insert_image_hashes(pool: mysql_async::Pool, image_hash_vec: Vec<ImageHashes>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO image_hashes (sha256, image_phash) VALUES (:sha256, :image_phash) ON DUPLICATE KEY UPDATE image_phash=VALUES(image_phash)",
@@ -1174,8 +1174,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn get_last_number(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
       .await
       .unwrap()
@@ -1350,8 +1350,8 @@ impl Vermilion {
   }
 
   //Address Indexer Helper functions
-  pub(crate) async fn create_transfers_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn create_transfers_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS transfers (
         id varchar(80) not null,
@@ -1368,8 +1368,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_transfers(pool: &mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, address, is_genesis)
@@ -1395,8 +1395,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn create_address_table(pool: &mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn create_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS addresses (
         id varchar(80) not null primary key,
@@ -1412,8 +1412,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_addresses(pool: &mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, address, is_genesis)
@@ -1439,8 +1439,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn get_start_block(pool: &mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut conn = pool.get_conn().await.unwrap();
+  pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
     let row = conn.query_iter("select max(block_number) from transfers")
       .await
       .unwrap()
