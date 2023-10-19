@@ -40,6 +40,11 @@ use std::thread::JoinHandle;
 use rand::Rng;
 use rand::SeedableRng;
 
+use tch::{
+	Kind,
+	vision::imagenet,
+  CModule
+};
 
 
 #[derive(Debug, Parser, Clone)]
@@ -133,6 +138,13 @@ pub struct SatMetadata {
 pub struct ImageHashes {
   sha256: String,
   image_phash: String
+}
+
+pub struct ImageClasses {
+  sha256: String,
+  rank: u32,
+  class: String,
+  probability: f64
 }
 
 #[derive(Clone, Serialize)]
@@ -305,6 +317,7 @@ impl Vermilion {
       Self::create_metadata_table(pool.clone()).await.unwrap();
       Self::create_sat_table(pool.clone()).await.unwrap();
       Self::create_image_hash_table(pool.clone()).await.unwrap();
+      Self::create_image_class_table(pool.clone()).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
@@ -444,10 +457,12 @@ impl Vermilion {
           let mut metadata_vec: Vec<Metadata> = Vec::new();
           let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
           let mut image_hashes_vec: Vec<ImageHashes> = Vec::new();
+          let mut image_classes_vec: Vec<ImageClasses> = Vec::new();
+          let model = Self::load_model().unwrap();
           for (number, inscription_id, inscription) in number_id_inscriptions {
             let t0 = Instant::now();
-            let (metadata, sat_metadata, image_hashes) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
-                Ok((metadata, sat_metadata, image_hashes)) => (metadata, sat_metadata, image_hashes),
+            let (metadata, sat_metadata, image_hashes, image_classes) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone(), &model) {
+                Ok((metadata, sat_metadata, image_hashes, image_classes)) => (metadata, sat_metadata, image_hashes, image_classes),
                 Err(error) => {
                   println!("Error: {} extracting metadata for inscription number: {}. Marking as error", error, number);
                   let mut locked_status_vector = status_vector.lock().await;
@@ -469,17 +484,22 @@ impl Vermilion {
               },
               None => {}                
             }
+            if let Some(mut image_classes) = image_classes {
+              image_classes_vec.append(&mut image_classes);
+            }
             let t1 = Instant::now();            
             retrieval += t1.duration_since(t0);
           }
+
           //4.1 Insert metadata
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let hash_insert_result = Self::bulk_insert_image_hashes(cloned_pool.clone(), image_hashes_vec).await;
+          let class_insert_result = Self::bulk_insert_image_classes(cloned_pool.clone(), image_classes_vec).await;
           //4.2 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() || class_insert_result.is_err() {
             println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
@@ -491,7 +511,7 @@ impl Vermilion {
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
               //_LOCKED state to prevent other threads from changing status before current thread completes
-              if status.status != "NOT_FOUND_LOCKED" || status.status != "ERROR_LOCKED" {
+              if status.status != "NOT_FOUND_LOCKED" && status.status != "ERROR_LOCKED" {
                 status.status = "SUCCESS".to_string();
               } else if status.status == "NOT_FOUND_LOCKED" {
                 status.status = "NOT_FOUND".to_string();
@@ -570,7 +590,7 @@ impl Vermilion {
             continue;
           }
 
-          let transfers = match index.get_transfers_by_block_height(height) {
+          let mut transfers = match index.get_transfers_by_block_height(height) {
             Ok(transfers) => transfers,
             Err(err) => {
               println!("Error getting transfers for block height: {:?} - {:?}, waiting a minute", height, err);
@@ -578,6 +598,9 @@ impl Vermilion {
               continue;
             }
           };
+
+          // remove miner transfers
+          transfers.retain(|(_id, satpoint)| satpoint.outpoint != OutPoint::null());
 
           if transfers.len() == 0 {
             height += 1;
@@ -852,7 +875,7 @@ impl Vermilion {
     first_char == '{' || last_char == '}' || ratio > 0.1
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Option<ImageHashes>)> {
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription, model: &CModule) -> Result<(Metadata, Option<SatMetadata>, Option<ImageHashes>, Option<Vec<ImageClasses>>)> {
     let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -972,7 +995,7 @@ impl Vermilion {
         match phash {
           Some(phash) => {
             let image_hash = ImageHashes {
-              sha256: sha256.unwrap(),
+              sha256: sha256.clone().unwrap(),
               image_phash: phash
             };
             Some(image_hash)
@@ -982,9 +1005,37 @@ impl Vermilion {
       },
       None => None
     };
+
     let t4 = Instant::now();
-    //println!("index: {:?} metadata: {:?} sat: {:?} image_hash: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t4.duration_since(t0));
-    Ok((metadata, sat_metadata, image_hashes))
+    let image_classes = if let (Some(body), Some(content_type)) = (inscription.body(), inscription.content_type().map(str::to_string)) {
+      if content_type.contains("image") {
+        let classes = match Self::classify_image(body, model) {
+          Ok(classes) => Some(classes),
+          Err(err) => {
+            println!("Error classifying image: {:?} - {:?}", inscription_id, err);
+            None
+          }
+        };
+        classes.map(|classes| {
+          classes.into_iter().map(|(i, class, probability)| {
+            ImageClasses {
+              sha256: sha256.clone().unwrap(),
+              rank: i as u32,
+              class,
+              probability
+            }
+          }).collect::<Vec<_>>()
+        })
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    let t5 = Instant::now();
+    println!("index: {:?} metadata: {:?} sat: {:?} image_hash: {:?} image_class: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t5.duration_since(t0));
+    Ok((metadata, sat_metadata, image_hashes, image_classes))
   }
 
   pub(crate) fn extract_image_hash(body: &[u8], content_type: Option<String>) -> Option<String> {
@@ -1008,6 +1059,29 @@ impl Vermilion {
     };
     let hash = hasher.hash_image(&image);
     Some(hash.to_base64())
+  }
+  
+  pub(crate) fn load_model() -> Result<CModule, tch::TchError> {
+    let model = CModule::load("vit_large_patch16_224_augreg_in21k.pt")?;
+    Ok(model)
+  }
+
+  pub(crate) fn classify_image(body: &[u8], model: &CModule) -> Result<Vec<(usize, String, f64)>, tch::TchError> {
+    // Load the image file and resize it to the usual imagenet dimension of 224x224.
+    let image = imagenet::load_image_and_resize224_from_memory(body)?;
+
+    // Apply the forward pass of the model to get the logits
+    let output = model.forward_ts(&[image.unsqueeze(0)])?.softmax(-1, Kind::Float);
+
+    // Return the top 5 categories for this image.
+    let top_five = imagenet::top_21k(&output, 2)
+      .into_iter()
+      .enumerate()
+      .map(|(i, (prob, class))| {
+        (i, class, prob)
+      }).collect::<Vec<_>>();
+
+    Ok(top_five)
   }
 
   pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
@@ -1075,6 +1149,21 @@ impl Vermilion {
         image_phash varchar(20),
         INDEX index_sha256 (sha256),
         INDEX index_image_phash (image_phash)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn create_image_class_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS image_classes (
+        sha256 varchar(64) not null,
+        class_rank int unsigned not null,
+        class varchar(180),
+        probability double,
+        INDEX index_sha256 (sha256),
+        INDEX index_class (class),
+        primary key (sha256, class_rank)
       )").await.unwrap();
     Ok(())
   }
@@ -1169,6 +1258,28 @@ impl Vermilion {
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error bulk inserting image hashes: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) async fn bulk_insert_image_classes(pool: mysql_async::Pool, image_class_vec: Vec<ImageClasses>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO image_classes (sha256, class_rank, class, probability) VALUES (:sha256, :class_rank, :class, :probability) ON DUPLICATE KEY UPDATE class=VALUES(class), probability=VALUES(probability)",
+      image_class_vec.iter().map(|image_classes| params! {
+          "sha256" => &image_classes.sha256,
+          "class_rank" => &image_classes.rank,
+          "class" => &image_classes.class,
+          "probability" => &image_classes.probability
+      })
+    ).await;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting image classes: {}", error);
         Err(Box::new(error))
       }
     }
