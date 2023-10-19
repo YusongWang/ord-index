@@ -147,6 +147,12 @@ pub struct ImageClasses {
   probability: f64
 }
 
+pub struct ContentBlob {
+  sha256: String,
+  content: Vec<u8>,
+  content_type: String
+}
+
 #[derive(Clone, Serialize)]
 pub struct Transfer {
   id: String,
@@ -316,6 +322,7 @@ impl Vermilion {
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       Self::create_metadata_table(pool.clone()).await.unwrap();
       Self::create_sat_table(pool.clone()).await.unwrap();
+      Self::create_content_table(pool.clone()).await.unwrap();
       Self::create_image_hash_table(pool.clone()).await.unwrap();
       Self::create_image_class_table(pool.clone()).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
@@ -433,7 +440,7 @@ impl Vermilion {
             inscriptions.push(inscription);
           }
 
-          //3. Upload ordinal content to s3
+          //3. Upload ordinal content to s3 (optional)
           let t4 = Instant::now();
           let cloned_ids = inscription_ids.clone();
           let cloned_inscriptions = inscriptions.clone();
@@ -497,10 +504,30 @@ impl Vermilion {
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let hash_insert_result = Self::bulk_insert_image_hashes(cloned_pool.clone(), image_hashes_vec).await;
           let class_insert_result = Self::bulk_insert_image_classes(cloned_pool.clone(), image_classes_vec).await;
-          //4.2 Update status
+          //4.2 Upload content to db
+          let t51a = Instant::now();
+          let mut content_vec: Vec<ContentBlob> = Vec::new();
+          for inscription in inscriptions {
+            if let Some(content) = inscription.body() {
+              let content_type = match inscription.content_type() {
+                  Some(content_type) => content_type,
+                  None => ""
+              };
+              let sha256 = digest(content);
+              let content_blob = ContentBlob {
+                sha256: sha256.to_string(),
+                content: content.to_vec(),
+                content_type: content_type.to_string()
+              };
+              content_vec.push(content_blob);
+            }
+          }
+          let content_result = Self::bulk_insert_content(cloned_pool.clone(), content_vec).await;
+
+          //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() || class_insert_result.is_err() {
-            println!("Error bulk inserting metadata for inscription numbers: {}-{}. Marking as error", first_number, last_number);
+          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() || class_insert_result.is_err() || content_result.is_err() {
+            println!("Error bulk inserting into db for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
@@ -601,7 +628,7 @@ impl Vermilion {
 
           // remove miner transfers
           transfers.retain(|(_id, satpoint)| satpoint.outpoint != OutPoint::null());
-
+          
           if transfers.len() == 0 {
             height += 1;
             continue;
@@ -1168,6 +1195,19 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS content (
+        increment_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
+        sha256 varchar(64) NOT NULL PRIMARY KEY,
+        content mediumblob,
+        content_type text,
+        INDEX index_sha256 (sha256)
+      )").await.unwrap();
+    Ok(())
+  }
+
   pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
     let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
@@ -1280,6 +1320,33 @@ impl Vermilion {
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error bulk inserting image classes: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
+  pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let mut conn = Self::get_conn(pool).await;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let _exec = tx.exec_batch(
+      r"INSERT INTO content (sha256, content, content_type) VALUES (:sha256, :content, :content_type) ON DUPLICATE KEY UPDATE sha256=sha256",
+      content_vec.iter().map(|content_blob| params! {
+        "sha256" => &content_blob.sha256,
+        "content" => &content_blob.content,
+        "content_type" => &content_blob.content_type
+      })
+    ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        println!("Error bulk inserting content: {}", error);
+      }
+    };
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        println!("Error bulk inserting content: {}", error);
         Err(Box::new(error))
       }
     }
