@@ -1046,7 +1046,7 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS content (
-        increment_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
+        content_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
         sha256 varchar(64) NOT NULL PRIMARY KEY,
         content mediumblob,
         content_type text,
