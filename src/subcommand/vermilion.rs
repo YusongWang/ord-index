@@ -1,7 +1,5 @@
 use super::*;
 use axum_server::Handle;
-use image_hasher::HashAlg;
-use image_hasher::HasherConfig;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -127,11 +125,6 @@ pub struct SatMetadata {
   percentile: String,
   satpoint: String,
   timestamp: i64
-}
-
-pub struct ImageHashes {
-  sha256: String,
-  image_phash: String
 }
 
 pub struct ContentBlob {
@@ -310,7 +303,6 @@ impl Vermilion {
       Self::create_metadata_table(pool.clone()).await.unwrap();
       Self::create_sat_table(pool.clone()).await.unwrap();
       Self::create_content_table(pool.clone()).await.unwrap();
-      Self::create_image_hash_table(pool.clone()).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
@@ -449,11 +441,10 @@ impl Vermilion {
           let mut retrieval = Duration::from_millis(0);
           let mut metadata_vec: Vec<Metadata> = Vec::new();
           let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
-          let mut image_hashes_vec: Vec<ImageHashes> = Vec::new();
           for (number, inscription_id, inscription) in number_id_inscriptions {
             let t0 = Instant::now();
-            let (metadata, sat_metadata, image_hashes) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
-                Ok((metadata, sat_metadata, image_hashes)) => (metadata, sat_metadata, image_hashes),
+            let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
+                Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
                 Err(error) => {
                   println!("Error: {} extracting metadata for inscription number: {}. Marking as error", error, number);
                   let mut locked_status_vector = status_vector.lock().await;
@@ -469,12 +460,6 @@ impl Vermilion {
               },
               None => {}                
             }
-            match image_hashes {
-              Some(image_hashes) => {
-                image_hashes_vec.push(image_hashes);
-              },
-              None => {}                
-            }
             let t1 = Instant::now();            
             retrieval += t1.duration_since(t0);
           }
@@ -483,7 +468,6 @@ impl Vermilion {
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
-          let hash_insert_result = Self::bulk_insert_image_hashes(cloned_pool.clone(), image_hashes_vec).await;
           //4.2 Upload content to db
           let t51a = Instant::now();
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -506,7 +490,7 @@ impl Vermilion {
 
           //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || hash_insert_result.is_err() || content_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
             println!("Error bulk inserting into db for inscription numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
@@ -882,7 +866,7 @@ impl Vermilion {
     first_char == '{' || last_char == '}' || ratio > 0.1
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Option<ImageHashes>)> {
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
     let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -996,52 +980,11 @@ impl Vermilion {
       None => None
     };
     let t3 = Instant::now();
-    let image_hashes = match inscription.body() {
-      Some(body) => {
-        let phash = Self::extract_image_hash(body, inscription.content_type().map(str::to_string));
-        match phash {
-          Some(phash) => {
-            let image_hash = ImageHashes {
-              sha256: sha256.clone().unwrap(),
-              image_phash: phash
-            };
-            Some(image_hash)
-          },
-          None => None
-        }
-      },
-      None => None
-    };
 
-    let t4 = Instant::now();
-
-    log::debug!("index: {:?} metadata: {:?} sat: {:?} image_hash: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t4.duration_since(t0));
-    Ok((metadata, sat_metadata, image_hashes))
+    log::trace!("index: {:?} metadata: {:?} sat: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t3.duration_since(t0));
+    Ok((metadata, sat_metadata))
   }
 
-  pub(crate) fn extract_image_hash(body: &[u8], content_type: Option<String>) -> Option<String> {
-    match content_type {
-      Some(content_type) => {
-        if !content_type.contains("image") {
-          return None;
-        }
-      },
-      None => {
-        return None;
-      }
-    }
-
-    let hasher = HasherConfig::new().preproc_dct().hash_alg(HashAlg::Mean).to_hasher();
-    let image = match image::load_from_memory(&body) {
-      Ok(image) => image,
-      Err(_) => {
-        return None;
-      }
-    };
-    let hash = hasher.hash_image(&image);
-    Some(hash.to_base64())
-  }
-  
   pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await;
     conn.query_drop(
@@ -1095,18 +1038,6 @@ impl Vermilion {
         INDEX index_sat (sat),
         INDEX index_block (block),
         INDEX index_rarity (rarity)
-      )").await.unwrap();
-    Ok(())
-  }
-
-  pub(crate) async fn create_image_hash_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS image_hashes (
-        sha256 varchar(64) not null primary key,
-        image_phash varchar(20),
-        INDEX index_sha256 (sha256),
-        INDEX index_image_phash (image_phash)
       )").await.unwrap();
     Ok(())
   }
@@ -1194,26 +1125,6 @@ impl Vermilion {
       Ok(_) => Ok(()),
       Err(error) => {
         println!("Error bulk inserting ordinal sat metadata: {}", error);
-        Err(Box::new(error))
-      }
-    }
-  }
-
-  pub(crate) async fn bulk_insert_image_hashes(pool: mysql_async::Pool, image_hash_vec: Vec<ImageHashes>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let _exec = tx.exec_batch(
-      r"INSERT INTO image_hashes (sha256, image_phash) VALUES (:sha256, :image_phash) ON DUPLICATE KEY UPDATE image_phash=VALUES(image_phash)",
-      image_hash_vec.iter().map(|image_hashes| params! {
-          "sha256" => &image_hashes.sha256,
-          "image_phash" => &image_hashes.image_phash
-      })
-    ).await;
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        println!("Error bulk inserting image hashes: {}", error);
         Err(Box::new(error))
       }
     }
