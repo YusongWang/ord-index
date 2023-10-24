@@ -1145,6 +1145,7 @@ impl Vermilion {
       Ok(_) => {},
       Err(error) => {
         println!("Error bulk inserting content: {}", error);
+        return Err(Box::new(error));
       }
     };
     let result = tx.commit().await;
