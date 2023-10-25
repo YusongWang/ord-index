@@ -97,14 +97,11 @@ pub struct Metadata {
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
-  location: String,
   number: i64,
   sequence_number: Option<u64>,
   parent: Option<String>,
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
-  offset: i64,
-  output_transaction: String,
   sat: Option<i64>,
   timestamp: i64,
   sha256: Option<String>,
@@ -128,7 +125,6 @@ pub struct SatMetadata {
   offset: u64,
   rarity: String,
   percentile: String,
-  satpoint: String,
   timestamp: i64
 }
 
@@ -877,10 +873,6 @@ impl Vermilion {
       .get_inscription_entry(inscription_id)
       .unwrap()
       .unwrap();
-    let satpoint = index
-      .get_inscription_satpoint_by_id(inscription_id)
-      .unwrap()
-      .unwrap();
     let t1 = Instant::now();
     let content_length = match inscription.content_length() {
       Some(content_length) => Some(content_length as i64),
@@ -959,14 +951,11 @@ impl Vermilion {
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
-      location: satpoint.to_string(),
       number: entry.inscription_number,
       sequence_number: Some(entry.sequence_number),
       parent: parent,
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,
-      offset: satpoint.offset.try_into().unwrap(),
-      output_transaction: satpoint.outpoint.to_string(),
       sat: sat,
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
@@ -992,7 +981,6 @@ impl Vermilion {
           offset: sat.third(),
           rarity: sat.rarity().to_string(),
           percentile: sat.percentile(),
-          satpoint: satpoint.to_string(),
           timestamp: sat_blocktime.timestamp().timestamp()
         };
         Some(sat_metadata)
@@ -1015,14 +1003,11 @@ impl Vermilion {
           genesis_fee bigint,
           genesis_height bigint,
           genesis_transaction text,
-          location text,
           number bigint,
           sequence_number bigint unsigned,
           parent varchar(80),
           metaprotocol varchar(40),
           embedded_metadata mediumtext,
-          offset bigint,
-          output_transaction text,
           sat bigint,
           timestamp bigint,
           sha256 varchar(64),
@@ -1058,7 +1043,6 @@ impl Vermilion {
         offset bigint unsigned,
         rarity varchar(10),
         percentile text,
-        satpoint text,
         timestamp bigint,
         INDEX index_sat (sat),
         INDEX index_block (block),
@@ -1084,10 +1068,10 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, location, number, sequence_number, parent, metaprotocol, embedded_metadata, offset, output_transaction, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :location, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :offset, :output_transaction, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
         ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-        location=VALUES(location), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata),  offset=VALUES(offset), output_transaction=VALUES(output_transaction), 
+        number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
         sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
@@ -1096,14 +1080,11 @@ impl Vermilion {
           "genesis_fee" => &metadata.genesis_fee,
           "genesis_height" => &metadata.genesis_height,
           "genesis_transaction" => &metadata.genesis_transaction,
-          "location" => &metadata.location,
           "number" => &metadata.number,
           "sequence_number" => &metadata.sequence_number,
           "parent" => &metadata.parent,
           "metaprotocol" => &metadata.metaprotocol,
           "embedded_metadata" => &metadata.embedded_metadata,
-          "offset" => &metadata.offset,
-          "output_transaction" => &metadata.output_transaction,
           "sat" => &metadata.sat,
           "timestamp" => &metadata.timestamp,
           "sha256" => &metadata.sha256,
@@ -1128,10 +1109,10 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, satpoint, timestamp)
-        VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :satpoint, :timestamp)
+      r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
+        VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :timestamp)
         ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch), 
-        period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), satpoint=VALUES(satpoint), timestamp=VALUES(timestamp)",
+        period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), timestamp=VALUES(timestamp)",
         metadata_vec.iter().map(|metadata| params! {
           "sat" => &metadata.sat,
           "sat_decimal" => &metadata.decimal,
@@ -1144,7 +1125,6 @@ impl Vermilion {
           "offset" => &metadata.offset,
           "rarity" => &metadata.rarity,
           "percentile" => &metadata.percentile,
-          "satpoint" => &metadata.satpoint,
           "timestamp" => &metadata.timestamp
       })
     ).await;
@@ -1715,14 +1695,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
-        location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.take("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
-        offset: row.get("offset").unwrap(),
-        output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
@@ -1751,14 +1728,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
-        location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
-        offset: row.get("offset").unwrap(),
-        output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
@@ -1997,14 +1971,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
-        location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
-        offset: row.get("offset").unwrap(),
-        output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
@@ -2033,14 +2004,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
-        location: row.get("location").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
-        offset: row.get("offset").unwrap(),
-        output_transaction: row.get("output_transaction").unwrap(),
         sat: row.take("sat").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
@@ -2074,7 +2042,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         offset: row.get("offset").unwrap(),
         rarity: row.get("rarity").unwrap(),
         percentile: row.get("percentile").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
         timestamp: row.get("timestamp").unwrap()
       }
     );
