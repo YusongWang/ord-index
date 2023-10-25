@@ -366,7 +366,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                log::warn!("No inscription found for inscription number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::warn!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 let mut locked_status_vector = status_vector.lock().await;
@@ -451,7 +451,7 @@ impl Vermilion {
             let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
                 Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
                 Err(error) => {
-                  println!("Error: {} extracting metadata for inscription number: {}. Marking as error", error, number);
+                  println!("Error: {} extracting metadata for sequence number: {}. Marking as error", error, number);
                   let mut locked_status_vector = status_vector.lock().await;
                   let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == number).unwrap();
                   status.status = "ERROR_LOCKED".to_string();
@@ -496,7 +496,7 @@ impl Vermilion {
           //4.3 Update status
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
-            println!("Error bulk inserting into db for inscription numbers: {}-{}. Marking as error", first_number, last_number);
+            println!("Error bulk inserting into db for sequence numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
