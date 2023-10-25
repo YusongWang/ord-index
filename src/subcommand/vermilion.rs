@@ -97,6 +97,7 @@ pub struct Metadata {
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
+  pointer: Option<u64>,
   number: i64,
   sequence_number: Option<u64>,
   parent: Option<String>,
@@ -953,6 +954,7 @@ impl Vermilion {
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
+      pointer: inscription.pointer(),
       number: entry.inscription_number,
       sequence_number: Some(entry.sequence_number),
       parent: parent,
@@ -1005,6 +1007,7 @@ impl Vermilion {
           genesis_fee bigint,
           genesis_height bigint,
           genesis_transaction text,
+          pointer bigint unsigned,
           number bigint,
           sequence_number bigint unsigned,
           parent varchar(80),
@@ -1070,10 +1073,10 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
+      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
+        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
         ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-        number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
+        pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
         sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
         metadata_vec.iter().map(|metadata| params! { 
           "id" => &metadata.id,
@@ -1082,6 +1085,7 @@ impl Vermilion {
           "genesis_fee" => &metadata.genesis_fee,
           "genesis_height" => &metadata.genesis_height,
           "genesis_transaction" => &metadata.genesis_transaction,
+          "pointer" => &metadata.pointer,
           "number" => &metadata.number,
           "sequence_number" => &metadata.sequence_number,
           "parent" => &metadata.parent,
@@ -1701,6 +1705,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
+        pointer: row.take("pointer").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.take("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
@@ -1734,6 +1739,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
+        pointer: row.take("pointer").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
@@ -1981,6 +1987,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
+        pointer: row.take("pointer").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
@@ -2014,6 +2021,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
+        pointer: row.take("pointer").unwrap(),
         number: row.get("number").unwrap(),
         sequence_number: row.get("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
