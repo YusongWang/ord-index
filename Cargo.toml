@@ -71,6 +71,8 @@ rand = "0.8.5"
 image = "0.24.7"
 image_hasher = "1.2.0"
 tch = { git = "https://github.com/SmarakNayak/tch-rs.git", branch = "imagenet21k" }
+rustc-serialize = "0.3.24"
+cbor = "0.4.1"
 
 [dev-dependencies]
 executable-path = "1.0.0"
