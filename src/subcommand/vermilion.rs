@@ -451,7 +451,7 @@ impl Vermilion {
             let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
                 Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
                 Err(error) => {
-                  println!("Error: {} extracting metadata for sequence number: {}. Marking as error", error, number);
+                  println!("Error: {} extracting metadata for sequence number: {}. Marking as error, will retry", error, number);
                   let mut locked_status_vector = status_vector.lock().await;
                   let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == number).unwrap();
                   status.status = "ERROR_LOCKED".to_string();
@@ -496,7 +496,7 @@ impl Vermilion {
           //4.3 Update status
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
-            println!("Error bulk inserting into db for sequence numbers: {}-{}. Marking as error", first_number, last_number);
+            log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Marking as error", first_number, last_number);
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
@@ -1188,7 +1188,7 @@ impl Vermilion {
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        println!("Error bulk inserting content: {}", error);
+        log::debug!("Error bulk inserting content: {}", error);
         return Err(Box::new(error));
       }
     };
@@ -1196,7 +1196,7 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting content: {}", error);
+        log::debug!("Error bulk inserting content: {}", error);
         Err(Box::new(error))
       }
     }
