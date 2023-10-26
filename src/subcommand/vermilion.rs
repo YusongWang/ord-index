@@ -38,8 +38,8 @@ use std::thread::JoinHandle;
 use rand::Rng;
 use rand::SeedableRng;
 
-use cbor::Decoder;
-use rustc_serialize::json::ToJson;
+use serde_json::{Value as JsonValue, value::Number as JsonNumber};
+use ciborium::value::Value as CborValue;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -594,9 +594,6 @@ impl Vermilion {
               continue;
             }
           };
-
-          // remove miner transfers
-          transfers.retain(|(_id, satpoint)| satpoint.outpoint != OutPoint::null());
           
           if transfers.len() == 0 {
             height += 1;
@@ -608,15 +605,25 @@ impl Vermilion {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
             Err(e) => {
-              println!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
+              log::debug!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
               if e.to_string().contains("No such mempool or blockchain transaction") {
-                println!("Attempting 1 at a time");
+                log::debug!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
                     Ok(mut tx) => Some(tx.pop().unwrap()),
-                    Err(e) => {
-                      println!("Error getting transfer transaction: {:?} for {:?} - {:?}, skipping", satpoint.outpoint.txid, id, e);
+                    Err(e) => {                      
+                      let miner_outpoint = OutPoint{
+                        txid: Hash::all_zeros(),
+                        vout: 0
+                      };
+                      if satpoint.outpoint != miner_outpoint {
+                        log::error!("ERROR: skipped non-miner transfer: {:?} - {:?} - {:?}, trying again in a minute", satpoint.outpoint.txid, id, e);
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        continue;
+                      } else {
+                        log::debug!("Skipped miner transfer: {:?} for {:?} - {:?}", satpoint.outpoint.txid, id, e);
+                      }
                       None
                     }
                   };
@@ -872,6 +879,36 @@ impl Vermilion {
     first_char == '{' || last_char == '}' || ratio > 0.1
   }
 
+  fn cbor_into_string(cbor: CborValue) -> Option<String> {
+    match cbor {
+        CborValue::Text(string) => Some(string),
+        _ => None,
+    }
+  }
+
+  fn cbor_to_json(cbor: CborValue) -> JsonValue {
+    match cbor {
+        CborValue::Null => JsonValue::Null,
+        CborValue::Bool(boolean) => JsonValue::Bool(boolean),
+        CborValue::Text(string) => JsonValue::String(string),
+        CborValue::Integer(int) => JsonValue::Number({
+            let int: i128 = int.into();
+            if let Ok(int) = u64::try_from(int) {
+                JsonNumber::from(int)
+            } else if let Ok(int) = i64::try_from(int) {
+                JsonNumber::from(int)
+            } else {
+                JsonNumber::from_f64(int as f64).unwrap()
+            }
+        }),
+        CborValue::Float(float) => JsonValue::Number(JsonNumber::from_f64(float).unwrap()),
+        CborValue::Array(vec) => JsonValue::Array(vec.into_iter().map(Self::cbor_to_json).collect()),
+        CborValue::Map(map) => JsonValue::Object(map.into_iter().map(|(k, v)| (Self::cbor_into_string(k).unwrap(), Self::cbor_to_json(v))).collect()),
+        CborValue::Bytes(_) | CborValue::Tag(_, _) => unimplemented!(),
+        _ => unimplemented!(),
+    }
+  }
+
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
     let t0 = Instant::now();
     let entry = index
@@ -894,16 +931,7 @@ impl Vermilion {
     };
     let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
     let metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
-    let embedded_metadata = if let Some(metadata_bytes) = inscription.clone().metadata {
-      let mut d = Decoder::from_bytes(metadata_bytes);
-      if d.items().into_iter().count() > 1 {
-        log::warn!("More than one metadata item found for inscription: {}, only filling with first", inscription_id);
-      }
-      let cbor = d.items().next().map_or(None, |result| result.ok());
-      Some(cbor.to_json().to_string())
-    } else {
-      None
-    };
+    let embedded_metadata = inscription.metadata().map_or(None, |cbor| Some(Self::cbor_to_json(cbor).to_string()));
     let sha256 = match inscription.body() {
       Some(body) => {
         let hash = digest(body);

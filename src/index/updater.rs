@@ -256,7 +256,7 @@ impl<'index> Updater<'_> {
     // Default rpcworkqueue in bitcoind is 16, meaning more than 16 concurrent requests will be rejected.
     // Since we are already requesting blocks on a separate thread, and we don't want to break if anything
     // else runs a request, we keep this to 12.
-    const PARALLEL_REQUESTS: usize = 12;
+    const PARALLEL_REQUESTS: usize = 48;
 
     std::thread::spawn(move || {
       let rt = tokio::runtime::Builder::new_multi_thread()
