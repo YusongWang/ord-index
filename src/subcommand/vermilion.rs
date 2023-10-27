@@ -1131,6 +1131,13 @@ impl Vermilion {
           "is_recursive" => &metadata.is_recursive
       })
     ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        println!("Error bulk inserting ordinal metadata: {}", error);
+        return Err(Box::new(error));
+      }
+    };
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -1164,6 +1171,13 @@ impl Vermilion {
           "timestamp" => &metadata.timestamp
       })
     ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        println!("Error bulk inserting sat metadata: {}", error);
+        return Err(Box::new(error));
+      }
+    };
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -1415,6 +1429,13 @@ impl Vermilion {
           "is_genesis" => &transfer.is_genesis
       })
     ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        println!("Error bulk inserting ordinal transfers: {}", error);
+        return Err(Box::new(error));
+      }
+    };
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -1461,6 +1482,13 @@ impl Vermilion {
           "is_genesis" => &transfer.is_genesis
       })
     ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        println!("Error bulk inserting ordinal addresses: {}", error);
+        return Err(Box::new(error));
+      }
+    };
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
