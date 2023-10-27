@@ -586,7 +586,7 @@ impl Vermilion {
             continue;
           }
 
-          let mut transfers = match index.get_transfers_by_block_height(height) {
+          let transfers = match index.get_transfers_by_block_height(height) {
             Ok(transfers) => transfers,
             Err(err) => {
               println!("Error getting transfers for block height: {:?} - {:?}, waiting a minute", height, err);
