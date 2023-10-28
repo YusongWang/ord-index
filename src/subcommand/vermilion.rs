@@ -1865,21 +1865,34 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<InscriptionMetadataForBlock> {
+  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<Metadata> {
     let mut conn = Self::get_conn(pool).await;
     let inscriptions = conn.exec_map(
-      "SELECT id, content_length, content_type, genesis_fee, genesis_height, number, timestamp FROM ordinals WHERE genesis_height=:block", 
+      "SELECT * FROM ordinals WHERE genesis_height=:block", 
       params! {
         "block" => block
       },
-      |mut row: mysql_async::Row| InscriptionMetadataForBlock {
+      |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
         content_type: row.take("content_type").unwrap(), 
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
+        genesis_transaction: row.get("genesis_transaction").unwrap(),
+        pointer: row.take("pointer").unwrap(),
         number: row.get("number").unwrap(),
-        timestamp: row.get("timestamp").unwrap()
+        sequence_number: row.get("sequence_number").unwrap(),
+        parent: row.take("parent").unwrap(),
+        metaprotocol: row.take("metaprotocol").unwrap(),
+        embedded_metadata: row.take("embedded_metadata").unwrap(),
+        sat: row.take("sat").unwrap(),
+        timestamp: row.get("timestamp").unwrap(),
+        sha256: row.take("sha256").unwrap(),
+        text: row.take("text").unwrap(),
+        is_json: row.get("is_json").unwrap(),
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
       }
     ).await.unwrap();
     inscriptions
