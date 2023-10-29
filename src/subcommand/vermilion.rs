@@ -44,49 +44,51 @@ use ciborium::value::Value as CborValue;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
-  #[clap(
+  #[arg(
     long,
     default_value = "0.0.0.0",
     help = "Listen on <ADDRESS> for incoming requests."
   )]
   address: String,
-  #[clap(
+  #[arg(
     long,
     help = "Request ACME TLS certificate for <ACME_DOMAIN>. This ord instance must be reachable at <ACME_DOMAIN>:443 to respond to Let's Encrypt ACME challenges."
   )]
   acme_domain: Vec<String>,
-  #[clap(
+  #[arg(
     long,
     help = "Listen on <HTTP_PORT> for incoming HTTP requests. [default: 80]."
   )]
   http_port: Option<u16>,
-  #[clap(
+  #[arg(
     long,
     group = "port",
     help = "Listen on <HTTPS_PORT> for incoming HTTPS requests. [default: 443]."
   )]
   https_port: Option<u16>,
-  #[clap(long, help = "Store ACME TLS certificates in <ACME_CACHE>.")]
+  #[arg(long, help = "Store ACME TLS certificates in <ACME_CACHE>.")]
   acme_cache: Option<PathBuf>,
-  #[clap(long, help = "Provide ACME contact <ACME_CONTACT>.")]
+  #[arg(long, help = "Provide ACME contact <ACME_CONTACT>.")]
   acme_contact: Vec<String>,
-  #[clap(long, help = "Serve HTTP traffic on <HTTP_PORT>.")]
+  #[arg(long, help = "Serve HTTP traffic on <HTTP_PORT>.")]
   http: bool,
-  #[clap(long, help = "Serve HTTPS traffic on <HTTPS_PORT>.")]
+  #[arg(long, help = "Serve HTTPS traffic on <HTTPS_PORT>.")]
   https: bool,
-  #[clap(long, help = "Redirect HTTP traffic to HTTPS.")]
+  #[arg(long, help = "Redirect HTTP traffic to HTTPS.")]
   redirect_http_to_https: bool,
-  #[clap(
+  #[arg(long, short = 'j', help = "Enable JSON API.")]
+  pub(crate) enable_json_api: bool,
+  #[arg(
     long,
     help = "Listen on <HTTP_PORT> for incoming REST requests. [default: 81]."
   )]
   api_http_port: Option<u16>,
-  #[clap(
+  #[arg(
     long,
     help = "Number of threads to use when uploading content and metadata. [default: 1]."
   )]
   n_threads: Option<u16>,
-  #[clap(long, help = "Only run api server, do not run indexer. [default: false].")]
+  #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
   pub run_api_server_only: bool
 }
 
@@ -768,6 +770,7 @@ impl Vermilion {
       http: self.http,
       https: self.https,
       redirect_http_to_https: self.redirect_http_to_https,
+      enable_json_api: self.enable_json_api,
     };
     let server_thread = thread::spawn(move || {
       let server_result = server.run(options, index, handle);
