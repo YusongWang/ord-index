@@ -208,6 +208,11 @@ pub struct RandomInscriptionNumber {
   number: i64
 }
 
+#[derive(Deserialize)]
+pub struct QueryNumber {
+  n: u32
+}
+
 pub struct SequenceNumberStatus {
   sequence_number: u64,
   status: String
@@ -498,7 +503,7 @@ impl Vermilion {
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            should_sleep = true;
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
@@ -522,7 +527,7 @@ impl Vermilion {
           //5. Log timings
           let t6 = Instant::now();
           if first_number != last_number {
-            println!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
+            log::info!("Finished numbers {} - {}", first_number, last_number);
           }
           let timing = IndexerTimings {
             inscription_start: first_number,
@@ -1637,8 +1642,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn random_inscriptions(n: Query<u32>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let n = n.0;
+  async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let n = n.0.n;
     let inscription_number = Self::get_random_inscriptions(server_config.pool, n).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -1933,7 +1938,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let n = std::cmp::min(n, 100);
     let mut set = JoinSet::new();
     let mut random_numbers = Vec::new();
-    for _i in 1..n {
+    for _i in 0..n {
       set.spawn(Self::get_random_inscription(pool.clone()));
     }
     while let Some(res) = set.join_next().await {
