@@ -9,6 +9,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::params;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use serde::Serialize;
 use sha256::digest;
 
@@ -21,7 +22,7 @@ use axum::{
   routing::get,
   Json, 
   Router,
-  extract::{Path, State},
+  extract::{Path, State, Query},
   body::{Body, BoxBody},
   middleware::map_response
 };
@@ -354,7 +355,7 @@ impl Vermilion {
           let mut should_sleep = false;
           let first_number = needed_numbers[0];
           let mut last_number = needed_numbers[needed_numbers.len()-1];
-          log::warn!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
+          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
 
           //1. Get ids
           let t2 = Instant::now();
@@ -366,7 +367,7 @@ impl Vermilion {
                 inscription_ids.push(inscription_id);
               },
               None => {
-                log::warn!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+                log::info!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 let mut locked_status_vector = status_vector.lock().await;
@@ -520,7 +521,7 @@ impl Vermilion {
           //5. Log timings
           let t6 = Instant::now();
           if first_number != last_number {
-            println!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
+            log::info!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
           }
           let timing = IndexerTimings {
             inscription_start: first_number,
@@ -571,7 +572,7 @@ impl Vermilion {
         let first_height = options.first_inscription_height();
         let db_height = Self::get_start_block(pool.clone()).await.unwrap();
         let mut height = std::cmp::max(first_height, db_height);
-        println!("Address indexing block start height: {:?}", height);
+        log::info!("Address indexing block start height: {:?}", height);
         loop {
           // break if ctrl-c is received
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -581,7 +582,7 @@ impl Vermilion {
           // make sure block is indexed before requesting transfers
           let indexed_height = index.get_blocks_indexed().unwrap();
           if height > indexed_height {
-            log::warn!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
+            log::info!("Requesting block transfers for block: {:?}, only indexed up to: {:?}. Waiting a minute", height, indexed_height);
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
           }
@@ -589,7 +590,7 @@ impl Vermilion {
           let transfers = match index.get_transfers_by_block_height(height) {
             Ok(transfers) => transfers,
             Err(err) => {
-              println!("Error getting transfers for block height: {:?} - {:?}, waiting a minute", height, err);
+              log::info!("Error getting transfers for block height: {:?} - {:?}, waiting a minute", height, err);
               tokio::time::sleep(Duration::from_secs(60)).await;
               continue;
             }
@@ -631,7 +632,7 @@ impl Vermilion {
                 }
                 txs
               } else {
-                println!("Waiting a minute");
+                log::debug!("Unknown Error getting transfer transactions for block height: {:?} - {:?} - Waiting a minute", height, e);
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               }              
@@ -719,6 +720,7 @@ impl Vermilion {
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/random_inscription", get(Self::random_inscription))
+          .route("/random_inscriptions", get(Self::random_inscriptions))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
@@ -817,14 +819,14 @@ impl Vermilion {
     let bytes = match body {	
       Some(body) => body.to_vec(),	
       None => {	
-        println!("No body found for inscription: {}, filling with empty body", inscription_id);	
+        log::debug!("No body found for inscription: {}, filling with empty body", inscription_id);	
         Vec::new()	
       }	
     };	
     let content_type = match Inscription::content_type(&inscription) {	
       Some(content_type) => content_type,	
       None => {	
-        println!("No content type found for inscription: {}, filling with empty content type", inscription_id);	
+        log::debug!("No content type found for inscription: {}, filling with empty content type", inscription_id);	
         ""	
       }	
     };
@@ -843,7 +845,7 @@ impl Vermilion {
         put_status	
       }	
       Err(error) => {	
-        println!("Error uploading ordinal {} to S3: {} - {:?}", id.clone(), error, error.message());	
+        log::error!("Error uploading ordinal {} to S3: {} - {:?}", id.clone(), error, error.message());	
         return;	
       }	
     };
@@ -919,7 +921,7 @@ impl Vermilion {
     let content_length = match inscription.content_length() {
       Some(content_length) => Some(content_length as i64),
       None => {
-        println!("No content length found for inscription: {}, filling with 0", inscription_id);
+        log::debug!("No content length found for inscription: {}, filling with 0", inscription_id);
         Some(0)
       }
     };
@@ -1134,7 +1136,7 @@ impl Vermilion {
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        println!("Error bulk inserting ordinal metadata: {}", error);
+        log::warn!("Error bulk inserting ordinal metadata: {}", error);
         return Err(Box::new(error));
       }
     };
@@ -1142,7 +1144,7 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting ordinal metadata: {}", error);
+        log::warn!("Error bulk inserting ordinal metadata: {}", error);
         Err(Box::new(error))
       }
     }
@@ -1174,7 +1176,7 @@ impl Vermilion {
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        println!("Error bulk inserting sat metadata: {}", error);
+        log::warn!("Error bulk inserting sat metadata: {}", error);
         return Err(Box::new(error));
       }
     };
@@ -1182,7 +1184,7 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting ordinal sat metadata: {}", error);
+        log::warn!("Error bulk inserting ordinal sat metadata: {}", error);
         Err(Box::new(error))
       }
     }
@@ -1432,7 +1434,7 @@ impl Vermilion {
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        println!("Error bulk inserting ordinal transfers: {}", error);
+        log::warn!("Error bulk inserting ordinal transfers: {}", error);
         return Err(Box::new(error));
       }
     };
@@ -1440,7 +1442,7 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting ordinal transfers: {}", error);
+        log::warn!("Error bulk inserting ordinal transfers: {}", error);
         Err(Box::new(error))
       }
     }
@@ -1485,7 +1487,7 @@ impl Vermilion {
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        println!("Error bulk inserting ordinal addresses: {}", error);
+        log::warn!("Error bulk inserting ordinal addresses: {}", error);
         return Err(Box::new(error));
       }
     };
@@ -1493,7 +1495,7 @@ impl Vermilion {
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error bulk inserting ordinal addresses: {}", error);
+        log::warn!("Error bulk inserting ordinal addresses: {}", error);
         Err(Box::new(error))
       }
     }
@@ -1628,6 +1630,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let inscription_number = Self::get_random_inscription(server_config.pool).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscription_number),
+    )
+  }
+
+  async fn random_inscriptions(n: Query<u32>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let n = n.0;
+    let inscription_number = Self::get_random_inscriptions(server_config.pool, n).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
@@ -1917,6 +1928,20 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     random_inscription_number
   }
 
+  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32) -> Vec<RandomInscriptionNumber> {
+    let n = std::cmp::min(n, 100);
+    let mut set = JoinSet::new();
+    let mut random_numbers = Vec::new();
+    for _i in 1..n {
+      set.spawn(Self::get_random_inscription(pool.clone()));
+    }
+    while let Some(res) = set.join_next().await {
+      let random_number = res.unwrap();
+      random_numbers.push(random_number);
+    }
+    random_numbers
+  }
+
   async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
     let conn: mysql_async::Conn = pool.get_conn().await.unwrap();
     conn
@@ -2174,7 +2199,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error creating editions table stored procedure: {}", error);
+        log::warn!("Error creating editions table stored procedure: {}", error);
         Err(Box::new(error))
       }
     }
@@ -2193,7 +2218,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
         select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
           select sha256, 
-                 min(number) as first_number, 
+                 min(sequence_number) as first_number, 
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
@@ -2214,7 +2239,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
         select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
           select sha256, 
-                 min(number) as first_number, 
+                 min(sequence_number) as first_number,
                  sum(genesis_fee) as total_fee, 
                  max(content_length) as content_length, 
                  count(*) as count, 
@@ -2238,7 +2263,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        println!("Error creating weights table stored procedure: {}", error);
+        log::warn!("Error creating weights table stored procedure: {}", error);
         Err(Box::new(error))
       }
     }
