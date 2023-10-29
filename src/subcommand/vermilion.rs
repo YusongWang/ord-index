@@ -497,7 +497,8 @@ impl Vermilion {
           //4.3 Update status
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
-            log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Marking as error", first_number, last_number);
+            log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
+            tokio::time::sleep(Duration::from_secs(60)).await;
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
@@ -521,7 +522,7 @@ impl Vermilion {
           //5. Log timings
           let t6 = Instant::now();
           if first_number != last_number {
-            log::info!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
+            println!("Finished numbers {} - {} @ {:?}", first_number, last_number, t5);
           }
           let timing = IndexerTimings {
             inscription_start: first_number,
