@@ -1916,7 +1916,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_random_inscription(pool: mysql_async::Pool) -> Metadata {
     let mut conn = Self::get_conn(pool).await;
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let random_float = rng.gen::<f64>();
+    let random_float = rng.gen::<f64>();    
+    println!("random number: {:?}", random_float);
     let random_inscription_number: Metadata = conn.exec_map(
       "SELECT * from ordinals where sequence_number=(SELECT first_number FROM weights where band_end>:random_float limit 1)", 
       params! {
