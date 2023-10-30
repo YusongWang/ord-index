@@ -1917,7 +1917,6 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let mut conn = Self::get_conn(pool).await;
     let mut rng = rand::rngs::StdRng::from_entropy();
     let random_float = rng.gen::<f64>();
-    log::info!("Random float: {}", random_float);
     let random_inscription_number: Metadata = conn.exec_map(
       "SELECT * from ordinals where sequence_number=(SELECT first_number FROM weights where band_end>:random_float limit 1) limit 1", 
       params! {
@@ -1954,16 +1953,13 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32) -> Vec<Metadata> {
     let n = std::cmp::min(n, 100);
-    log::info!("Getting {} random inscriptions", n);
     let mut set = JoinSet::new();
     let mut random_numbers = Vec::new();
     for _i in 0..n {
       set.spawn(Self::get_random_inscription(pool.clone()));
-      log::info!("Spawning task: {:?}", _i);
     }
     while let Some(res) = set.join_next().await {
       let random_number = res.unwrap();
-      log::info!("Random number received: {:?}", random_number.sequence_number);
       random_numbers.push(random_number);
     }
     random_numbers
