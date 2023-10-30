@@ -111,7 +111,7 @@ pub struct Metadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
-  is_maybe_json: bool,
+  is_maybe_json: Option<bool>,
   is_bitmap_style: Option<bool>,
   is_recursive: Option<bool>
 }
@@ -176,7 +176,7 @@ pub struct TransferWithMetadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
-  is_maybe_json: bool,
+  is_maybe_json: Option<bool>,
   is_bitmap_style: Option<bool>,
   is_recursive: Option<bool>
 }
@@ -1001,7 +1001,7 @@ impl Vermilion {
       sha256: sha256.clone(),
       text: text,
       is_json: is_json,
-      is_maybe_json: is_maybe_json,
+      is_maybe_json: Some(is_maybe_json),
       is_bitmap_style: Some(is_bitmap_style),
       is_recursive: Some(is_recursive)
     };
@@ -1789,7 +1789,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.take("is_recursive").unwrap()
       }
@@ -1823,8 +1823,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
     );
@@ -1905,8 +1905,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
     ).await.unwrap();
@@ -1940,8 +1940,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
     ).await
@@ -2086,7 +2086,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.take("is_recursive").unwrap()
       }
@@ -2119,8 +2119,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
     );
@@ -2153,8 +2153,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_maybe_json: row.take("is_maybe_json").unwrap(),
+        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
     );
