@@ -1919,7 +1919,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let random_float = rng.gen::<f64>();
     log::info!("Random float: {}", random_float);
     let random_inscription_number: Metadata = conn.exec_map(
-      "SELECT * from ordinals where sequence_number=(SELECT first_number FROM weights where band_end>:random_float limit 1)", 
+      "SELECT * from ordinals where sequence_number=(SELECT first_number FROM weights where band_end>:random_float limit 1) limit 1", 
       params! {
         "random_float" => random_float
       },
@@ -2239,50 +2239,60 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     tx.query_drop(
       r#"CREATE PROCEDURE update_weights()
       BEGIN
+      DROP TABLE IF EXISTS weights_1;
+      DROP TABLE IF EXISTS weights_2;      
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE", now());
-      CREATE TABLE weights as
-      select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
-          select sha256, 
-                 min(sequence_number) as first_number, 
-                 sum(genesis_fee) as total_fee, 
-                 max(content_length) as content_length, 
-                 count(*) as count, 
-                 max(is_json) as is_json,
-                 max(is_bitmap_style) as is_bitmap_style,
-                 max(is_maybe_json) as is_maybe_json
-          from ordinals group by sha256
-        ) a
-      ) b;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE", now(), found_rows());
-      CREATE INDEX idx_band_start ON weights (band_start);
-      CREATE INDEX idx_band_end ON weights (band_end);
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_1", now());
+        CREATE TABLE weights_1 as
+        select sha256, 
+               min(sequence_number) as first_number, 
+               sum(genesis_fee) as total_fee, 
+               max(content_length) as content_length, 
+               count(*) as count
+        from ordinals 
+        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0
+        group by sha256;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_1", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_2", now());
+        CREATE TABLE weights_2 as select *, (10-log(10,first_number+1))*total_fee as weight from weights_1;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_2", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_3", now());
+        CREATE TABLE weights as
+        select *, sum(weight) OVER(order by first_number)/sum(weight) OVER() as band_end, coalesce(sum(weight) OVER(order by first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() as band_start from weights_2;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_3", now(), found_rows());
+        CREATE INDEX idx_band_start ON weights (band_start);
+        CREATE INDEX idx_band_end ON weights (band_end);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
+      
       ELSE
+      
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW", now());
       DROP TABLE IF EXISTS weights_new;
-      CREATE TABLE weights_new as
-      select b.*, sum(b.weight) OVER(order by b.first_number)/sum(b.weight) OVER() as band_end, coalesce(sum(b.weight) OVER(order by b.first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(b.weight) OVER() as band_start from (
-        select a.*, (10-log(10,a.first_number+1))*total_fee*(1-is_json)*(1-is_bitmap_style)*(1-is_maybe_json) as weight from (
-          select sha256, 
-                 min(sequence_number) as first_number,
-                 sum(genesis_fee) as total_fee, 
-                 max(content_length) as content_length, 
-                 count(*) as count, 
-                 max(is_json) as is_json,
-                 max(is_bitmap_style) as is_bitmap_style,
-                 max(is_maybe_json) as is_maybe_json
-          from ordinals group by sha256
-        ) a
-      ) b;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW", now(), found_rows());
-      CREATE INDEX idx_band_start ON weights_new (band_start);
-      CREATE INDEX idx_band_end ON weights_new (band_end);
+        CREATE TABLE weights_1 as
+        select sha256, 
+               min(sequence_number) as first_number, 
+               sum(genesis_fee) as total_fee, 
+               max(content_length) as content_length, 
+               count(*) as count
+        from ordinals 
+        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0
+        group by sha256;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_1", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_2", now());
+        CREATE TABLE weights_2 as select *, (10-log(10,first_number+1))*total_fee as weight from weights_1;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_2", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_3", now());
+        CREATE TABLE weights_new as
+        select *, sum(weight) OVER(order by first_number)/sum(weight) OVER() as band_end, coalesce(sum(weight) OVER(order by first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() as band_start from weights_2;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_3", now(), found_rows());
+        CREATE INDEX idx_band_start ON weights_new (band_start);
+        CREATE INDEX idx_band_end ON weights_new (band_end);
       RENAME TABLE weights to weights_old, weights_new to weights;
       DROP TABLE IF EXISTS weights_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
-      END IF;
+      END IF;      
+      DROP TABLE IF EXISTS weights_1;
+      DROP TABLE IF EXISTS weights_2;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
     tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 + 43200) DO CALL update_weights()").await.unwrap();
