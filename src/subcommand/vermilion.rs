@@ -2197,7 +2197,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       BEGIN
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
-      CREATE TABLE editions as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
+      CREATE TABLE editions as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition, count(sequence_number) OVER(PARTITION BY sha256) as total from ordinals;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE", now(), found_rows());
       CREATE INDEX idx_id ON editions (id);
       CREATE INDEX idx_number ON editions (number);
@@ -2206,7 +2206,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       ELSE
       DROP TABLE IF EXISTS editions_new;
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_NEW", now());
-      CREATE TABLE editions_new as select id, number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY number asc) as edition, count(number) OVER(PARTITION BY sha256) as total from ordinals;
+      CREATE TABLE editions_new as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition, count(sequence_number) OVER(PARTITION BY sha256) as total from ordinals;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_NEW", now(), found_rows());
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
