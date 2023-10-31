@@ -1835,7 +1835,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where id = :id) select id, number, edition from editions,a where editions.sha256=a.sha256 order by edition asc",
+      "with a as (select sha256 from editions where id = :id) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100",
       params! {
         "id" => inscription_id
       },
@@ -1851,7 +1851,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where number = :number) select id, number, edition from editions,a where editions.sha256=a.sha256 order by edition asc", 
+      "with a as (select sha256 from editions where number = :number) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100", 
       params! {
         "number" => number
       },
@@ -1867,7 +1867,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await;
     let editions = conn.exec_map(
-      "select id, number, edition from editions where sha256=:sha256 order by edition asc",
+      "select id, number, edition, total from editions where sha256=:sha256 order by edition asc limit 100",
       params! {
         "sha256" => sha256
       },
