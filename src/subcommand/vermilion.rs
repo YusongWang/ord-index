@@ -191,7 +191,8 @@ pub struct Content {
 pub struct InscriptionNumberEdition {
   id: String,
   number: i64,
-  edition: u64
+  edition: u64,
+  total: u64
 }
 
 #[derive(Clone, Serialize)]
@@ -1842,7 +1843,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap()
+        edition: row.get("edition").unwrap(),
+        total: row.get("total").unwrap()
       }
     ).await.unwrap();
     editions
@@ -1858,7 +1860,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap()
+        edition: row.get("edition").unwrap(),
+        total: row.get("total").unwrap()
       }
     ).await.unwrap();
     editions
@@ -1874,7 +1877,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       |row: mysql_async::Row| InscriptionNumberEdition {
         id: row.get("id").unwrap(),
         number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap()
+        edition: row.get("edition").unwrap(),
+        total: row.get("total").unwrap()
       }
     ).await.unwrap();
     editions
