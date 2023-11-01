@@ -2295,7 +2295,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_2;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 + 43200) DO CALL update_weights()").await.unwrap();
+    tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) DO CALL update_weights()").await.unwrap();
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
