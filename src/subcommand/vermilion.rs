@@ -7,6 +7,7 @@ use mysql_async::TxOpts;
 use mysql_async::Pool;
 use mysql_async::prelude::Queryable;
 use mysql_async::params;
+use mysql_async::Row;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
@@ -1535,9 +1536,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(&server_config.s3client, &server_config.bucket_name, "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content_blob = Self::get_ordinal_content(server_config.pool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
@@ -1550,9 +1551,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content(&server_config.s3client, &server_config.bucket_name, inscription_id.to_string()).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content_blob = Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await;
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
@@ -1561,9 +1562,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content_by_number(server_config.pool, &server_config.s3client, &server_config.bucket_name, number).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content_blob = Self::get_ordinal_content_by_number(server_config.pool,  number).await;
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
@@ -1572,9 +1573,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let response = Self::get_ordinal_content_by_sha256(server_config.pool, &server_config.s3client, &server_config.bucket_name, sha256).await;
-    let bytes = response.body.collect().await.unwrap().to_vec();
-    let content_type = response.content_type.unwrap();
+    let content_blob = Self::get_ordinal_content_by_sha256(server_config.pool, sha256, None).await;
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
@@ -1721,7 +1722,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   //DB functions
-  async fn get_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
+  async fn get_ordinal_content_s3(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
     let key = format!("content/{}", inscription_id);
     let content = client
       .get_object()
@@ -1733,10 +1734,29 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, client: &s3::Client, bucket_name: &str, number: i64) -> GetObjectOutput {
-    let mut conn = Self::get_conn(pool).await;
-    let inscription_id: String = conn.exec_first(
-      "SELECT id FROM ordinals WHERE number=:number LIMIT 1", 
+  async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> ContentBlob {
+    let cloned_pool = pool.clone();
+    let mut conn = Self::get_conn(pool).await;    
+    let row: Row = conn.exec_first(
+      "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
+      params! {
+        "id" => inscription_id
+      }
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row);
+
+    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
+    content
+  }
+
+  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> ContentBlob {
+    let cloned_pool = pool.clone();
+    let mut conn = Self::get_conn(pool).await;    
+    let row: Row = conn.exec_first(
+      "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       }
@@ -1744,25 +1764,37 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     .await
     .unwrap()
     .unwrap();
+    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row);
 
-    let content = Self::get_ordinal_content(client, bucket_name, inscription_id).await;
+    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, client: &s3::Client, bucket_name: &str, sha256: String) -> GetObjectOutput {
+  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> ContentBlob {
     let mut conn = Self::get_conn(pool).await;
-    let inscription_id: String = conn.exec_first(
-      "SELECT id FROM ordinals WHERE sha256=:sha256 LIMIT 1", 
+    let result = conn.exec_map(
+      r"SELECT *
+              FROM content
+              WHERE sha256 IN
+                  (SELECT sha256
+                  FROM content_moderation
+                  WHERE sha256=:sha256
+                    AND (human_override_moderation_flag='SAFE_MANUAL'
+                          OR coalesce(human_override_moderation_flag, automated_moderation_flag)='SAFE_AUTOMATED')) LIMIT 1",
       params! {
         "sha256" => sha256
+      },
+      |mut row: mysql_async::Row| ContentBlob {
+        sha256: row.get("sha256").unwrap(),
+        content: row.take("content").unwrap(),
+        content_type: row.take("content_type").unwrap(),
       }
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
-    let content = Self::get_ordinal_content(client, bucket_name, inscription_id).await;
-    content
+    );
+    let mut result = result.await.unwrap().pop().unwrap();
+    if let Some(content_type) = content_type_override {
+        result.content_type = content_type;
+    }
+    result
   }
 
   async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
