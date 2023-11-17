@@ -1737,16 +1737,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> ContentBlob {
     let cloned_pool = pool.clone();
     let mut conn = Self::get_conn(pool).await;    
-    let row: Row = conn.exec_first(
+    let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
         "id" => inscription_id
       }
     )
     .await
-    .unwrap()
     .unwrap();
-    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row);
+    if row.is_none() {
+      return ContentBlob {
+        sha256: "".to_string(),
+        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+        content_type: "text/plain".to_string(),
+      };
+    }
+    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
 
     let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
@@ -1755,16 +1761,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> ContentBlob {
     let cloned_pool = pool.clone();
     let mut conn = Self::get_conn(pool).await;    
-    let row: Row = conn.exec_first(
+    let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       }
     )
     .await
-    .unwrap()
     .unwrap();
-    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row);
+    if row.is_none() {
+      return ContentBlob {
+        sha256: "".to_string(),
+        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+        content_type: "text/plain".to_string(),
+      };
+    }
+    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
 
     let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
@@ -1772,6 +1784,34 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> ContentBlob {
     let mut conn = Self::get_conn(pool).await;
+    let moderation_flag: Option<String> = conn.exec_first(
+      r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
+              FROM content_moderation
+              WHERE sha256=:sha256
+              LIMIT 1",
+      params! {
+        "sha256" => sha256.clone()
+      }
+    ).await.unwrap();
+
+    if let Some(flag) = moderation_flag {
+        if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
+            //Proceed as normal
+        } else {
+          return ContentBlob {
+              sha256: sha256.clone(),
+              content: "This content has been blocked.".as_bytes().to_vec(),
+              content_type: "text/plain".to_string(),
+          };
+        }
+    } else {
+      return ContentBlob {
+        sha256: sha256.clone(),
+        content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
+        content_type: "text/plain".to_string(),
+      };
+    }
+    //Proceed if content exists and is safe
     let result = conn.exec_map(
       r"SELECT *
               FROM content
