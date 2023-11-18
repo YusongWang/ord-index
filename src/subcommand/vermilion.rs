@@ -1800,8 +1800,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         } else {
           return ContentBlob {
               sha256: sha256.clone(),
-              content: "This content has been blocked.".as_bytes().to_vec(),
-              content_type: "text/plain".to_string(),
+              content: std::fs::read("blocked.png").unwrap(),
+              content_type: "image/png".to_string(),
           };
         }
     } else {
