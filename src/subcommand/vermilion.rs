@@ -245,7 +245,7 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
-const INDEX_BATCH_SIZE: usize = 100;
+const INDEX_BATCH_SIZE: usize = 500;
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
