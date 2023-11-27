@@ -245,7 +245,7 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
-const INDEX_BATCH_SIZE: usize = 500;
+const INDEX_BATCH_SIZE: usize = 100;
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
@@ -504,6 +504,15 @@ impl Vermilion {
           let t52 = Instant::now();
           if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
+            if insert_result.is_err() {
+              log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
+            }
+            if sat_insert_result.is_err() {
+              log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
+            }
+            if content_result.is_err() {
+              log::info!("Content Error: {:?}", content_result.unwrap_err());
+            }
             should_sleep = true;
             let mut locked_status_vector = status_vector.lock().await;
             for j in needed_numbers.clone() {              
