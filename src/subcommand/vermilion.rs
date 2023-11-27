@@ -245,6 +245,8 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
+const INDEX_BATCH_SIZE: usize = 500;
+
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
     //1. Run Vermilion Server
@@ -611,9 +613,9 @@ impl Vermilion {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
             Err(e) => {
-              log::debug!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
-              if e.to_string().contains("No such mempool or blockchain transaction") {
-                log::debug!("Attempting 1 at a time");
+              log::info!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
+              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") {
+                log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
@@ -637,7 +639,7 @@ impl Vermilion {
                 }
                 txs
               } else {
-                log::debug!("Unknown Error getting transfer transactions for block height: {:?} - {:?} - Waiting a minute", height, e);
+                log::info!("Unknown Error getting transfer transactions for block height: {:?} - {:?} - Waiting a minute", height, e);
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               }              
@@ -1297,15 +1299,15 @@ impl Vermilion {
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();
     needed_inscription_numbers.sort();
-    if needed_length < 1000 {
+    if needed_length < INDEX_BATCH_SIZE {
       let mut i = 0;
-      while needed_length < 1000 {        
+      while needed_length < INDEX_BATCH_SIZE {        
         i = i + 1;
         needed_inscription_numbers.push(largest_number_in_vec + i);
         needed_length = needed_inscription_numbers.len();
       }
     } else {
-      needed_inscription_numbers = needed_inscription_numbers[0..1000].to_vec();
+      needed_inscription_numbers = needed_inscription_numbers[0..INDEX_BATCH_SIZE].to_vec();
     }
     //Mark as pending
     for number in needed_inscription_numbers.clone() {
@@ -1330,16 +1332,16 @@ impl Vermilion {
   pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>, n_threads: u32) {
     let mut locked_timings = timings.lock().await;
     // sort & remove incomplete entries    
-    locked_timings.retain(|e| e.inscription_start + 1000 == e.inscription_end);
+    locked_timings.retain(|e| e.inscription_start + INDEX_BATCH_SIZE as u64 == e.inscription_end);
     locked_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
     if locked_timings.len() < 1 {
       return;
     }
     //First get the relevant entries
     let mut relevant_timings: Vec<IndexerTimings> = Vec::new();
-    let mut last = locked_timings.last().unwrap().inscription_start + 1000;
+    let mut last = locked_timings.last().unwrap().inscription_start + INDEX_BATCH_SIZE as u64;
     for timing in locked_timings.iter().rev() {
-      if timing.inscription_start == last - 1000 {
+      if timing.inscription_start == last - INDEX_BATCH_SIZE as u64 {
         relevant_timings.push(timing.clone());
         if relevant_timings.len() == n_threads as usize {
           break;
