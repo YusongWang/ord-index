@@ -1047,7 +1047,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
@@ -1083,7 +1083,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS sat (
         sat bigint not null primary key,
@@ -1106,7 +1106,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS content (
         content_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
@@ -1118,8 +1118,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
+  pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
@@ -1167,8 +1167,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
+  pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
@@ -1207,8 +1207,8 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
+  pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO content (sha256, content, content_type) VALUES (:sha256, :content, :content_type) ON DUPLICATE KEY UPDATE sha256=sha256",
@@ -1236,7 +1236,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1 and sequence_number!=0")
       .await
       .unwrap()
@@ -1412,7 +1412,7 @@ impl Vermilion {
 
   //Address Indexer Helper functions
   pub(crate) async fn create_transfers_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS transfers (
         id varchar(80) not null,
@@ -1430,8 +1430,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
+  pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, offset,  address, is_genesis)
@@ -1466,7 +1466,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn create_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS addresses (
         id varchar(80) not null primary key,
@@ -1483,8 +1483,8 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send>> {
-    let mut conn = Self::get_conn(pool).await;
+  pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, offset, address, is_genesis)
@@ -1519,7 +1519,7 @@ impl Vermilion {
   }
 
   pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select max(block_number) from transfers")
       .await
       .unwrap()
@@ -1747,7 +1747,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> ContentBlob {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await;    
+    let mut conn = Self::get_conn(pool).await.unwrap();    
     let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
@@ -1771,7 +1771,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> ContentBlob {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await;    
+    let mut conn = Self::get_conn(pool).await.unwrap();    
     let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
@@ -1794,7 +1794,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> ContentBlob {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let moderation_flag: Option<String> = conn.exec_first(
       r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
               FROM content_moderation
@@ -1849,7 +1849,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
@@ -1883,7 +1883,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> Metadata {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
@@ -1917,7 +1917,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
       "with a as (select sha256 from editions where id = :id) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100",
       params! {
@@ -1934,7 +1934,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
       "with a as (select sha256 from editions where number = :number) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100", 
       params! {
@@ -1951,7 +1951,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
       "select id, number, edition, total from editions where sha256=:sha256 order by edition asc limit 100",
       params! {
@@ -1968,7 +1968,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let inscriptions = conn.exec_map(
       "SELECT * FROM ordinals WHERE genesis_height=:block", 
       params! {
@@ -2001,7 +2001,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
   
   async fn get_random_inscription(pool: mysql_async::Pool) -> Metadata {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let mut rng = rand::rngs::StdRng::from_entropy();
     let random_float = rng.gen::<f64>();
     let random_inscription_number: Metadata = conn.exec_map(
@@ -2052,13 +2052,13 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     random_numbers
   }
 
-  async fn get_conn(pool: mysql_async::Pool) -> mysql_async::Conn {
-    let conn: mysql_async::Conn = pool.get_conn().await.unwrap();
+  async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
+    let conn = pool.get_conn().await;
     conn
   }
 
   async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> Transfer {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let transfer = conn.exec_map(
       "select * from transfers where id=:id order by block_number desc limit 1", 
       params! {
@@ -2079,7 +2079,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> Transfer {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let transfer = conn.exec_map(
       "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
       params! {
@@ -2100,7 +2100,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> Vec<Transfer> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let transfers = conn.exec_map(
       "select * from transfers where id=:id order by block_number asc", 
       params! {
@@ -2121,7 +2121,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> Vec<Transfer> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let transfers = conn.exec_map(
       "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
       params! {
@@ -2142,7 +2142,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<TransferWithMetadata> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let transfers = conn.exec_map(
       "select a.*, o.* from addresses a left join ordinals o on a.id=o.id where a.address=:address",
       params! {
@@ -2182,7 +2182,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE sat=:sat", 
       params! {
@@ -2216,7 +2216,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
       "select * from ordinals where sat in (select sat from sat where block=:block)", 
       params! {
@@ -2250,7 +2250,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> SatMetadata {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
       "SELECT * FROM sat WHERE sat=:sat", 
       params! {
@@ -2276,7 +2276,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await.unwrap();
     tx.query_drop(
@@ -2316,7 +2316,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn create_weights_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await.unwrap();
     tx.query_drop(
@@ -2390,7 +2390,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn create_procedure_log(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await;
+    let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS proc_log (
         id int unsigned auto_increment primary key,
