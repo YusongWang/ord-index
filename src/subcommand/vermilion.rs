@@ -2331,7 +2331,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0
+        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
+          select sha256 
+          from content_moderation 
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
+          or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_1", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_2", now());
@@ -2381,7 +2385,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0
+        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
+          select sha256 
+          from content_moderation 
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
+          or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_1", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_2", now());
