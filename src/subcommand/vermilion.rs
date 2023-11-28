@@ -2418,7 +2418,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         FROM weights_3;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_4", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_5", now());
-        CREATE TABLE weights AS
+        CREATE TABLE weights_new AS
         SELECT *,
               sum(weight) OVER(ORDER BY first_number)/sum(weight) OVER() AS band_end, 
               coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
