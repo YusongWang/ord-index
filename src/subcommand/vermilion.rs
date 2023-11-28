@@ -2319,7 +2319,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       r#"CREATE PROCEDURE update_weights()
       BEGIN
       DROP TABLE IF EXISTS weights_1;
-      DROP TABLE IF EXISTS weights_2;      
+      DROP TABLE IF EXISTS weights_2;
+      DROP TABLE IF EXISTS weights_3;
+      DROP TABLE IF EXISTS weights_4;
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_1", now());
         CREATE TABLE weights_1 as
@@ -2333,12 +2335,37 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_1", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_2", now());
-        CREATE TABLE weights_2 as select *, (10-log(10,first_number+1))*total_fee as weight from weights_1;
+        CREATE TABLE weights_2 AS
+        SELECT w.*,
+              CASE
+                  WHEN db.dbscan_class IS NULL THEN -w.first_number
+                  WHEN db.dbscan_class = -1 THEN -w.first_number
+                  ELSE db.dbscan_class
+              END AS CLASS
+        FROM weights_1 w
+        LEFT JOIN dbscan db ON w.sha256=db.sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_3", now());
-        CREATE TABLE weights as
-        select *, sum(weight) OVER(order by first_number)/sum(weight) OVER() as band_end, coalesce(sum(weight) OVER(order by first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() as band_start from weights_2;
+        CREATE TABLE weights_3 AS
+        SELECT CLASS,
+              min(first_number) AS first_number,
+              sum(total_fee) AS total_fee
+        FROM weights_2
+        GROUP BY CLASS;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_3", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_4", now());
+        CREATE TABLE weights_4 AS
+        SELECT *,
+              (10-log(10,first_number+1))*total_fee AS weight
+        FROM weights_3;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_4", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_5", now());
+        CREATE TABLE weights AS
+        SELECT *,
+              sum(weight) OVER(ORDER BY first_number)/sum(weight) OVER() AS band_end, 
+              coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+        FROM weights_4;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_5", now(), found_rows());
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
@@ -2358,20 +2385,47 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_1", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_2", now());
-        CREATE TABLE weights_2 as select *, (10-log(10,first_number+1))*total_fee as weight from weights_1;
+        CREATE TABLE weights_2 AS
+        SELECT w.*,
+              CASE
+                  WHEN db.dbscan_class IS NULL THEN -w.first_number
+                  WHEN db.dbscan_class = -1 THEN -w.first_number
+                  ELSE db.dbscan_class
+              END AS CLASS
+        FROM weights_1 w
+        LEFT JOIN dbscan db ON w.sha256=db.sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_3", now());
-        CREATE TABLE weights_new as
-        select *, sum(weight) OVER(order by first_number)/sum(weight) OVER() as band_end, coalesce(sum(weight) OVER(order by first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() as band_start from weights_2;
+        CREATE TABLE weights_3 AS
+        SELECT CLASS,
+              min(first_number) AS first_number,
+              sum(total_fee) AS total_fee
+        FROM weights_2
+        GROUP BY CLASS;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_3", now(), found_rows());
-        CREATE INDEX idx_band_start ON weights_new (band_start);
-        CREATE INDEX idx_band_end ON weights_new (band_end);
-      RENAME TABLE weights to weights_old, weights_new to weights;
-      DROP TABLE IF EXISTS weights_old;
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_4", now());
+        CREATE TABLE weights_4 AS
+        SELECT *,
+              (10-log(10,first_number+1))*total_fee AS weight
+        FROM weights_3;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_4", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_5", now());
+        CREATE TABLE weights AS
+        SELECT *,
+              sum(weight) OVER(ORDER BY first_number)/sum(weight) OVER() AS band_end, 
+              coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+        FROM weights_4;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_5", now(), found_rows());
+        CREATE INDEX idx_band_start ON weights (band_start);
+        CREATE INDEX idx_band_end ON weights (band_end);
+        RENAME TABLE weights to weights_old, weights_new to weights;
+        DROP TABLE IF EXISTS weights_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;      
       DROP TABLE IF EXISTS weights_1;
       DROP TABLE IF EXISTS weights_2;
+      DROP TABLE IF EXISTS weights_3;
+      DROP TABLE IF EXISTS weights_4;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
     tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) DO CALL update_weights()").await.unwrap();
