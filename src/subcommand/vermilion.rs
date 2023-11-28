@@ -1826,12 +1826,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let result = conn.exec_map(
       r"SELECT *
               FROM content
-              WHERE sha256 IN
-                  (SELECT sha256
-                  FROM content_moderation
-                  WHERE sha256=:sha256
-                    AND (human_override_moderation_flag='SAFE_MANUAL'
-                          OR coalesce(human_override_moderation_flag, automated_moderation_flag)='SAFE_AUTOMATED')) LIMIT 1",
+              WHERE sha256=:sha256
+              LIMIT 1",
       params! {
         "sha256" => sha256
       },
