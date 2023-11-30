@@ -27,6 +27,7 @@ use axum::{
   body::{Body, BoxBody},
   middleware::map_response
 };
+use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, SessionLayer};
 
 use tower_http::trace::TraceLayer;
 use tower_http::trace::DefaultMakeSpan;
@@ -210,6 +211,12 @@ pub struct InscriptionMetadataForBlock {
 #[derive(Deserialize)]
 pub struct QueryNumber {
   n: u32
+}
+
+pub struct RandomInscriptionBand {
+  sequence_number: u64,
+  start: f64,
+  end: f64
 }
 
 pub struct SequenceNumberStatus {
@@ -623,7 +630,7 @@ impl Vermilion {
             }
             Err(e) => {
               log::info!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
-              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") {
+              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
@@ -723,6 +730,10 @@ impl Vermilion {
           bucket_name: bucket_name
         };
 
+        let session_config = SessionConfig::default()
+          .with_table_name("sessions_table");
+        let session_store = SessionStore::<SessionNullPool>::new(None, session_config).await.unwrap();
+
         let app = Router::new()
           .route("/", get(Self::root))
           .route("/home", get(Self::home))
@@ -756,7 +767,8 @@ impl Vermilion {
                 tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
               })
           )
-          .with_state(server_config);
+          .with_state(server_config)
+          .layer(SessionLayer::new(session_store));
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
         //tracing::debug!("listening on {}", addr);
@@ -1646,19 +1658,26 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscription_number = Self::get_random_inscription(server_config.pool).await;
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let random_float = rng.gen::<f64>();
+    let (inscription_number, _band) = Self::get_random_inscription(server_config.pool, random_float).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
     )
   }
 
-  async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
+    let mut bands: Vec<(f64, f64)> = session.get("bands_seen").unwrap_or(Vec::new());
+    for band in bands.iter() {
+        println!("Band: {:?}", band);
+    }
     let n = n.0.n;
-    let inscription_number = Self::get_random_inscriptions(server_config.pool, n).await;
+    let (inscription_numbers, new_bands) = Self::get_random_inscriptions(server_config.pool, n, bands).await;
+    session.set("bands_seen", new_bands);
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(inscription_number),
+      Json(inscription_numbers),
     )
   }
 
@@ -1996,14 +2015,26 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     inscriptions
   }
   
-  async fn get_random_inscription(pool: mysql_async::Pool) -> Metadata {
+  async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> (Metadata, (f64, f64)) {
     let mut conn = Self::get_conn(pool).await.unwrap();
-    let mut rng = rand::rngs::StdRng::from_entropy();
-    let random_float = rng.gen::<f64>();
-    let random_inscription_number: Metadata = conn.exec_map(
-      "SELECT * from ordinals where sequence_number=(SELECT first_number FROM weights where band_end>:random_float limit 1) limit 1", 
+    let random_inscription_band = conn.exec_map(
+      "SELECT first_number, band_start, band_end FROM weights where band_end>:random_float limit 1",
       params! {
         "random_float" => random_float
+      },
+      |mut row: mysql_async::Row| RandomInscriptionBand {
+        sequence_number: row.get("first_number").unwrap(),
+        start: row.get("band_start").unwrap(),
+        end: row.get("band_end").unwrap()
+      }
+    ).await
+    .unwrap()
+    .pop()
+    .unwrap();
+    let metadata: Metadata = conn.exec_map(
+      "SELECT * from ordinals where sequence_number=:sequence_number limit 1", 
+      params! {
+        "sequence_number" => random_inscription_band.sequence_number
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
@@ -2031,21 +2062,38 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     .unwrap()
     .pop()
     .unwrap();
-    random_inscription_number
+    (metadata,(random_inscription_band.start, random_inscription_band.end))
   }
 
-  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32) -> Vec<Metadata> {
+  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32, mut bands: Vec<(f64, f64)>) -> (Vec<Metadata>, Vec<(f64, f64)>) {
     let n = std::cmp::min(n, 100);
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut random_floats = Vec::new();
+    while random_floats.len() < n as usize {
+      let random_float = rng.gen::<f64>();
+      let mut already_seen = false;
+      for band in bands.iter() {
+        if random_float >= band.0 && random_float < band.1 {
+          already_seen = true;
+          break;
+        }
+      }
+      if !already_seen {
+        random_floats.push(random_float);
+      }
+    }
+
     let mut set = JoinSet::new();
-    let mut random_numbers = Vec::new();
-    for _i in 0..n {
-      set.spawn(Self::get_random_inscription(pool.clone()));
+    let mut random_metadatas = Vec::new();
+    for i in 0..n {
+      set.spawn(Self::get_random_inscription(pool.clone(), random_floats[i as usize]));
     }
     while let Some(res) = set.join_next().await {
-      let random_number = res.unwrap();
-      random_numbers.push(random_number);
+      let random_inscription_details = res.unwrap();
+      random_metadatas.push(random_inscription_details.0);
+      bands.push(random_inscription_details.1);
     }
-    random_numbers
+    (random_metadatas, bands)
   }
 
   async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
@@ -2424,8 +2472,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
               coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_5", now(), found_rows());
-        CREATE INDEX idx_band_start ON weights (band_start);
-        CREATE INDEX idx_band_end ON weights (band_end);
+        CREATE INDEX idx_band_start ON weights_new (band_start);
+        CREATE INDEX idx_band_end ON weights_new (band_end);
         RENAME TABLE weights to weights_old, weights_new to weights;
         DROP TABLE IF EXISTS weights_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
