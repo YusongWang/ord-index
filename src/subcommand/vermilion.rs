@@ -630,7 +630,7 @@ impl Vermilion {
             }
             Err(e) => {
               log::info!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
-              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") {
+              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
@@ -2370,6 +2370,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_2;
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
+      DROP TABLE IF EXISTS weights_5;
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_1", now());
         CREATE TABLE weights_1 as
@@ -2399,11 +2400,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_3", now());
         CREATE TABLE weights_3 AS
-        SELECT CLASS,
+        SELECT sha256, 
+              min(class) as class,
               min(first_number) AS first_number,
               sum(total_fee) AS total_fee
         FROM weights_2
-        GROUP BY CLASS;
+        GROUP BY sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_3", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_4", now());
         CREATE TABLE weights_4 AS
@@ -2412,12 +2414,19 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         FROM weights_3;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_4", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_5", now());
-        CREATE TABLE weights AS
+        CREATE TABLE weights_5 AS
         SELECT *,
-              sum(weight) OVER(ORDER BY first_number)/sum(weight) OVER() AS band_end, 
-              coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
+              coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_5", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_6", now());
+      CREATE TABLE weights AS
+      SELECT *,
+            min(band_start) OVER(PARTITION BY class) AS class_band_start,
+            max(band_end) OVER(PARTITION BY class) AS class_band_end
+      FROM weights_5;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_6", now(), found_rows());
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
@@ -2453,11 +2462,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_3", now());
         CREATE TABLE weights_3 AS
-        SELECT CLASS,
+        SELECT sha256, 
+              min(class) as class,
               min(first_number) AS first_number,
               sum(total_fee) AS total_fee
         FROM weights_2
-        GROUP BY CLASS;
+        GROUP BY sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_3", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_4", now());
         CREATE TABLE weights_4 AS
@@ -2466,12 +2476,19 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         FROM weights_3;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_4", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_5", now());
-        CREATE TABLE weights_new AS
+        CREATE TABLE weights_5 AS
         SELECT *,
-              sum(weight) OVER(ORDER BY first_number)/sum(weight) OVER() AS band_end, 
-              coalesce(sum(weight) OVER(ORDER BY first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
+              coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_5", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_6", now());
+      CREATE TABLE weights_new AS
+      SELECT *,
+            min(band_start) OVER(PARTITION BY class) AS class_band_start,
+            max(band_end) OVER(PARTITION BY class) AS class_band_end
+      FROM weights_5;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_6", now(), found_rows());
         CREATE INDEX idx_band_start ON weights_new (band_start);
         CREATE INDEX idx_band_end ON weights_new (band_end);
         RENAME TABLE weights to weights_old, weights_new to weights;
@@ -2482,6 +2499,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_2;
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
+      DROP TABLE IF EXISTS weights_5;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
     tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) DO CALL update_weights()").await.unwrap();
