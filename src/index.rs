@@ -1311,55 +1311,6 @@ impl Index {
     Ok(return_vec)
   }
 
-  pub(crate) fn get_all_inscription_addresses(&self) -> Result<Vec<(InscriptionId, u64, SatPoint, String)>> {
-    let mut return_vec = Vec::new();
-    let rtx = self
-      .database
-      .begin_read()?;
-    let blocks_indexed = rtx
-      .open_table(HEIGHT_TO_BLOCK_HASH)?
-      .range(0..)?
-      .next_back()
-      .and_then(|result| result.ok())
-      .map(|(height, _hash)| height.value() + 1)
-      .unwrap_or(0);
-    log::info!("exporting addresses at block height {blocks_indexed}");
-
-    for result in rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ID)?.iter()? {
-      let (sequence_number, id) = result?;
-      let inscription_id = InscriptionId::load(*id.value());
-      let satpoint = self
-        .get_inscription_satpoint_by_id(inscription_id)?
-        .unwrap();
-
-      let address = if satpoint.outpoint == unbound_outpoint() {
-        "unbound".to_string()
-      } else {
-        let output = self
-          .get_transaction(satpoint.outpoint.txid)?
-          .unwrap()
-          .output
-          .into_iter()
-          .nth(satpoint.outpoint.vout.try_into().unwrap())
-          .unwrap();
-        self
-          .options
-          .chain()
-          .address_from_script(&output.script_pubkey)
-          .map(|address| address.to_string())
-          .unwrap_or_else(|e| e.to_string())
-      };
-      
-      return_vec.push((inscription_id, sequence_number.value(), satpoint, address));
-
-      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-        return_vec = Vec::new();
-        break;
-      }
-    }
-    Ok(return_vec)
-  }
-
   pub(crate) fn get_blocks_indexed(&self) -> Result<u64> {
     let rtx = self
       .database

@@ -153,18 +153,6 @@ pub struct Transfer {
 }
 
 #[derive(Clone, Serialize)]
-pub struct TransferSimple {
-  id: String,
-  sequence_number: u64,
-  satpoint: String,
-  transaction: String,
-  vout: u32,
-  offset: u64,
-  address: String,
-  is_genesis: bool
-}
-
-#[derive(Clone, Serialize)]
 pub struct TransferWithMetadata {
   id: String,
   block_number: i64,
@@ -297,7 +285,7 @@ impl Vermilion {
     //3. Run Address Indexer
     println!("Address Indexer Starting");
     let address_indexer_clone = self.clone();
-    let address_indexer_thread = address_indexer_clone.run_address_indexer_simple(options.clone(), index.clone());
+    let address_indexer_thread = address_indexer_clone.run_address_indexer(options.clone(), index.clone());
 
     //4. Run Inscription Indexer
     println!("Inscription Indexer Starting");
@@ -588,45 +576,6 @@ impl Vermilion {
         
       }
     })
-  }
-
-  pub(crate) fn run_address_indexer_simple(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
-    let address_indexer_thread = thread::spawn(move ||{
-      let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-      rt.block_on(async move {
-        let config = options.load_config().unwrap();
-        let url = config.db_connection_string.unwrap();
-        let pool = Pool::new(url.as_str());
-
-        Self::create_simple_address_table(pool.clone()).await.unwrap();
-        
-        let t0 = Instant::now();
-        log::info!("Address retrieval starting @ {:?}", t0);
-        let addresses = index.get_all_inscription_addresses().unwrap();
-        let t1 = Instant::now();
-        log::info!("Address retrieval finished @ {:?}", t1);
-        let transfers = addresses.into_iter().map(|address| {
-          TransferSimple {
-            id: address.0.to_string(),
-            sequence_number: address.1,
-            satpoint: address.2.to_string(),
-            transaction: address.2.outpoint.txid.to_string(),
-            vout: address.2.outpoint.vout,
-            offset: address.2.offset,
-            address: address.3,
-            is_genesis: address.2.outpoint.txid == address.0.txid
-          }
-        }).collect::<Vec<_>>();
-        Self::bulk_insert_simple_addresses(pool.clone(), transfers).await.unwrap();
-        let t2 = Instant::now();
-        log::info!("Address insert finished @ {:?}", t2);
-        println!("Address indexer stopped");
-      })
-    });
-    return address_indexer_thread;
   }
 
   pub(crate) fn run_address_indexer(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
@@ -1580,60 +1529,6 @@ impl Vermilion {
       }
     }
   }
-
-  pub(crate) async fn create_simple_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS addresses_simple (
-        id varchar(80) not null primary key,
-        sequence_number bigint unsigned not null,
-        satpoint text,
-        transaction text,
-        vout int unsigned,
-        offset int unsigned,
-        address varchar(100),
-        is_genesis boolean,
-        INDEX index_id (id),
-        INDEX index_address (address)
-      )").await.unwrap();
-    Ok(())
-  }
-
-  pub(crate) async fn bulk_insert_simple_addresses(pool: mysql_async::Pool, transfer_vec: Vec<TransferSimple>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let _exec = tx.exec_batch(
-      r"INSERT INTO addresses_simple (id, sequence_number, satpoint, transaction, vout, offset, address, is_genesis)
-        VALUES (:id, :sequence_number, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE block_number=VALUES(sequence_number), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
-        transfer_vec.iter().map(|transfer| params! { 
-          "id" => &transfer.id,
-          "sequence_number" => &transfer.sequence_number,
-          "satpoint" => &transfer.satpoint,
-          "transaction" => &transfer.transaction,
-          "vout" => &transfer.vout,
-          "offset" => &transfer.offset,
-          "address" => &transfer.address,
-          "is_genesis" => &transfer.is_genesis
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal addresses: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal addresses: {}", error);
-        Err(Box::new(error))
-      }
-    }
-  }
-
 
   pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
