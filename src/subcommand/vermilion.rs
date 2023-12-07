@@ -604,10 +604,10 @@ impl Vermilion {
         Self::create_simple_address_table(pool.clone()).await.unwrap();
         
         let t0 = Instant::now();
-        log::warn!("Address retrieval starting @ {:?}", t0);
+        log::info!("Address retrieval starting @ {:?}", t0);
         let addresses = index.get_all_inscription_addresses().unwrap();
         let t1 = Instant::now();
-        log::warn!("Address retrieval finished @ {:?}", t1);
+        log::info!("Address retrieval finished @ {:?}", t1);
         let transfers = addresses.into_iter().map(|address| {
           TransferSimple {
             id: address.0.to_string(),
@@ -622,7 +622,7 @@ impl Vermilion {
         }).collect::<Vec<_>>();
         Self::bulk_insert_simple_addresses(pool.clone(), transfers).await.unwrap();
         let t2 = Instant::now();
-        log::warn!("Address insert finished @ {:?}", t2);
+        log::info!("Address insert finished @ {:?}", t2);
         println!("Address indexer stopped");
       })
     });
@@ -1605,7 +1605,7 @@ impl Vermilion {
     let _exec = tx.exec_batch(
       r"INSERT INTO addresses_simple (id, sequence_number, satpoint, transaction, vout, offset, address, is_genesis)
         VALUES (:id, :sequence_number, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE sequence_number=VALUES(sequence_number), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
+        ON DUPLICATE KEY UPDATE block_number=VALUES(sequence_number), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
         transfer_vec.iter().map(|transfer| params! { 
           "id" => &transfer.id,
           "sequence_number" => &transfer.sequence_number,
