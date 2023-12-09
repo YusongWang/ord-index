@@ -242,6 +242,9 @@ pub struct IndexerTimings {
   get_metadata_end: Instant,
   retrieval: Duration,
   insertion: Duration,
+  metadata_insertion: Duration,
+  sat_insertion: Duration,
+  content_insertion: Duration,
   locking: Duration
 }
 
@@ -486,9 +489,10 @@ impl Vermilion {
           //4.1 Insert metadata
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
-          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
-          //4.2 Upload content to db
           let t51a = Instant::now();
+          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
+          let t51b = Instant::now();
+          //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
           for inscription in inscriptions {
             if let Some(content) = inscription.body() {
@@ -563,6 +567,9 @@ impl Vermilion {
             get_metadata_end: t6,
             retrieval: retrieval,
             insertion: t52.duration_since(t51),
+            metadata_insertion: t51a.duration_since(t51),
+            sat_insertion: t51b.duration_since(t51a),
+            content_insertion: t52.duration_since(t51b),
             locking: t6.duration_since(t52)
           };
           cloned_timing_vector.lock().await.push(timing);
@@ -597,6 +604,7 @@ impl Vermilion {
         let mut height = std::cmp::max(first_height, db_height);
         log::info!("Address indexing block start height: {:?}", height);
         loop {
+          let t0 = Instant::now();
           // break if ctrl-c is received
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
             break;
@@ -610,6 +618,7 @@ impl Vermilion {
             continue;
           }
 
+          let t1 = Instant::now();
           let transfers = match index.get_transfers_by_block_height(height) {
             Ok(transfers) => transfers,
             Err(err) => {
@@ -623,8 +632,12 @@ impl Vermilion {
             height += 1;
             continue;
           }
-
-          let txs = match fetcher.get_transactions(transfers.clone().into_iter().map(|(_id, satpoint)| satpoint.outpoint.txid).collect()).await {
+          let t2 = Instant::now();
+          let mut tx_id_list = transfers.clone().into_iter().map(|(_id, satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
+          log::info!("Predupe: {:?}", tx_id_list.len());
+          tx_id_list.dedup();
+          log::info!("Postdupe: {:?}", tx_id_list.len());
+          let txs = match fetcher.get_transactions(tx_id_list).await {
             Ok(txs) => {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
@@ -634,6 +647,10 @@ impl Vermilion {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
+                  // break if ctrl-c is received
+                  if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+                    break;
+                  }
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
                     Ok(mut tx) => Some(tx.pop().unwrap()),
                     Err(e) => {                      
@@ -662,16 +679,16 @@ impl Vermilion {
             }
           };
 
-          let iterator=transfers
-            .into_iter()
-            .zip(txs.into_iter())
-            .map(|((a,b),c)| (a,b,c));
-          
+          let t3 = Instant::now();          
           let mut id_point_address = Vec::new();
-          for (id, satpoint, tx) in iterator {
+          for (id, satpoint) in transfers {
             let address = if satpoint.outpoint == unbound_outpoint() {
               "unbound".to_string()
             } else {
+              let tx = txs.iter()
+                .find(|tx| tx.as_ref().map(|tx| tx.txid() == satpoint.outpoint.txid).unwrap_or(false))
+                .unwrap()
+                .clone();
               let output = tx
                 .unwrap()
                 .output
@@ -686,7 +703,7 @@ impl Vermilion {
             };
             id_point_address.push((id, satpoint, address));
           }
-
+          let t4 = Instant::now();
           let block_time = index.block_time(Height(height)).unwrap();
           let mut transfer_vec = Vec::new();
           for (id, point, address) in id_point_address {
@@ -702,9 +719,12 @@ impl Vermilion {
             };
             transfer_vec.push(transfer);
           }
+          let t5 = Instant::now();
           Self::bulk_insert_transfers(pool.clone(), transfer_vec.clone()).await.unwrap();
           Self::bulk_insert_addresses(pool.clone(), transfer_vec).await.unwrap();
+          let t6 = Instant::now();
           log::info!("Address indexer: Indexed block: {:?}", height);
+          log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert data: {:?} TOTAL: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t6.duration_since(t5), t6.duration_since(t0));
           height += 1;
         }
         println!("Address indexer stopped");
@@ -1131,42 +1151,74 @@ impl Vermilion {
   }
 
   pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
+    let mut conn = Self::get_conn(pool.clone()).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let _exec = tx.exec_batch(
-      r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
-        VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
-        ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-        pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
-        sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)",
-        metadata_vec.iter().map(|metadata| params! { 
-          "id" => &metadata.id,
-          "content_length" => &metadata.content_length,
-          "content_type" => &metadata.content_type,
-          "genesis_fee" => &metadata.genesis_fee,
-          "genesis_height" => &metadata.genesis_height,
-          "genesis_transaction" => &metadata.genesis_transaction,
-          "pointer" => &metadata.pointer,
-          "number" => &metadata.number,
-          "sequence_number" => &metadata.sequence_number,
-          "parent" => &metadata.parent,
-          "metaprotocol" => &metadata.metaprotocol,
-          "embedded_metadata" => &metadata.embedded_metadata,
-          "sat" => &metadata.sat,
-          "timestamp" => &metadata.timestamp,
-          "sha256" => &metadata.sha256,
-          "text" => &metadata.text,
-          "is_json" => &metadata.is_json,
-          "is_maybe_json" => &metadata.is_maybe_json,
-          "is_bitmap_style" => &metadata.is_bitmap_style,
-          "is_recursive" => &metadata.is_recursive
+    let insert_query = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
+    VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)";
+    let insert_query_update = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
+    VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
+    ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
+    pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
+    sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)";
+    let mut _exec = tx.exec_batch(
+      insert_query,
+      metadata_vec.iter().map(|metadata| params! { 
+        "id" => &metadata.id,
+        "content_length" => &metadata.content_length,
+        "content_type" => &metadata.content_type,
+        "genesis_fee" => &metadata.genesis_fee,
+        "genesis_height" => &metadata.genesis_height,
+        "genesis_transaction" => &metadata.genesis_transaction,
+        "pointer" => &metadata.pointer,
+        "number" => &metadata.number,
+        "sequence_number" => &metadata.sequence_number,
+        "parent" => &metadata.parent,
+        "metaprotocol" => &metadata.metaprotocol,
+        "embedded_metadata" => &metadata.embedded_metadata,
+        "sat" => &metadata.sat,
+        "timestamp" => &metadata.timestamp,
+        "sha256" => &metadata.sha256,
+        "text" => &metadata.text,
+        "is_json" => &metadata.is_json,
+        "is_maybe_json" => &metadata.is_maybe_json,
+        "is_bitmap_style" => &metadata.is_bitmap_style,
+        "is_recursive" => &metadata.is_recursive
       })
     ).await;
     match _exec {
       Ok(_) => {},
       Err(error) => {
-        log::warn!("Error bulk inserting ordinal metadata: {}", error);
-        return Err(Box::new(error));
+        if error.to_string().contains("Duplicate entry") {
+          log::info!("Duplicates found, updating metadata");
+          let mut _exec = tx.exec_batch(
+            insert_query_update,
+            metadata_vec.iter().map(|metadata| params! { 
+              "id" => &metadata.id,
+              "content_length" => &metadata.content_length,
+              "content_type" => &metadata.content_type,
+              "genesis_fee" => &metadata.genesis_fee,
+              "genesis_height" => &metadata.genesis_height,
+              "genesis_transaction" => &metadata.genesis_transaction,
+              "pointer" => &metadata.pointer,
+              "number" => &metadata.number,
+              "sequence_number" => &metadata.sequence_number,
+              "parent" => &metadata.parent,
+              "metaprotocol" => &metadata.metaprotocol,
+              "embedded_metadata" => &metadata.embedded_metadata,
+              "sat" => &metadata.sat,
+              "timestamp" => &metadata.timestamp,
+              "sha256" => &metadata.sha256,
+              "text" => &metadata.text,
+              "is_json" => &metadata.is_json,
+              "is_maybe_json" => &metadata.is_maybe_json,
+              "is_bitmap_style" => &metadata.is_bitmap_style,
+              "is_recursive" => &metadata.is_recursive
+            })
+          ).await;
+        } else {          
+          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
+          return Err(Box::new(error));
+        }
       }
     };
     let result = tx.commit().await;
@@ -1386,6 +1438,9 @@ impl Vermilion {
     let mut get_metadata_total = Duration::new(0,0);
     let mut retrieval_total = Duration::new(0,0);
     let mut insertion_total = Duration::new(0,0);
+    let mut metadata_insertion_total = Duration::new(0,0);
+    let mut sat_insertion_total = Duration::new(0,0);
+    let mut content_insertion_total = Duration::new(0,0);
     let mut locking_total = Duration::new(0,0);
     let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
     for timing in relevant_timings.iter() {
@@ -1398,23 +1453,29 @@ impl Vermilion {
       get_metadata_total = get_metadata_total + timing.get_metadata_end.duration_since(timing.get_metadata_start);
       retrieval_total = retrieval_total + timing.retrieval;
       insertion_total = insertion_total + timing.insertion;
+      metadata_insertion_total = metadata_insertion_total + timing.metadata_insertion;
+      sat_insertion_total = sat_insertion_total + timing.sat_insertion;
+      content_insertion_total = content_insertion_total + timing.content_insertion;
       locking_total = locking_total + timing.locking;
       last_start = timing.acquire_permit_start;
     }
     let count = relevant_timings.last().unwrap().inscription_end - relevant_timings.first().unwrap().inscription_start+1;
     let total_time = relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start);
-    log::debug!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
-    log::debug!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
-    log::debug!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
-    log::debug!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
-    log::debug!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
-    log::debug!("Get id time avg per thread: {:?}", get_id_total/n_threads);
-    log::debug!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
-    log::debug!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
-    log::debug!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
-    log::debug!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
-    log::debug!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
-    log::debug!("--Locking time avg per thread: {:?}", locking_total/n_threads);
+    log::info!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
+    log::info!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
+    log::info!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
+    log::info!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
+    log::info!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
+    log::info!("Get id time avg per thread: {:?}", get_id_total/n_threads);
+    log::info!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
+    log::info!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
+    log::info!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
+    log::info!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
+    log::info!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
+    log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total/n_threads);
+    log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total/n_threads);
+    log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total/n_threads);
+    log::info!("--Locking time avg per thread: {:?}", locking_total/n_threads);
 
     //Remove printed timings
     let to_remove = BTreeSet::from_iter(relevant_timings);
