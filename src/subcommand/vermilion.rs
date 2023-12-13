@@ -1,5 +1,6 @@
 use super::*;
 use axum_server::Handle;
+use mysql_async::Params;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -720,8 +721,19 @@ impl Vermilion {
             transfer_vec.push(transfer);
           }
           let t5 = Instant::now();
-          Self::bulk_insert_transfers(pool.clone(), transfer_vec.clone()).await.unwrap();
-          Self::bulk_insert_addresses(pool.clone(), transfer_vec).await.unwrap();
+          let insert_transfer_result = Self::bulk_insert_transfers2(pool.clone(), transfer_vec.clone()).await;
+          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
+          if insert_transfer_result.is_err() || insert_address_result.is_err() {
+            log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
+            if insert_transfer_result.is_err() {
+              log::info!("Transfer Error: {:?}", insert_transfer_result.unwrap_err());
+            }
+            if insert_address_result.is_err() {
+              log::info!("Address Error: {:?}", insert_address_result.unwrap_err());
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;              
+          }
           let t6 = Instant::now();
           log::info!("Address indexer: Indexed block: {:?}", height);
           log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert data: {:?} TOTAL: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t6.duration_since(t5), t6.duration_since(t0));
@@ -1150,6 +1162,107 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn bulk_insert<F, P, T>(
+    pool: mysql_async::Pool,
+    table: String,
+    cols: Vec<String>,
+    objects: Vec<T>,
+    fun: F,
+  ) -> mysql_async::Result<()>
+  where
+    F: Fn(&T) -> P,
+    P: Into<Params>,
+  {
+    let mut stmt = format!("INSERT IGNORE INTO {} ({}) VALUES ", table, cols.join(","));
+    let row = format!(
+        "({}),",
+        cols.iter()
+            .map(|_| "?".to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    stmt.reserve(objects.len() * (cols.len() * 2 + 2));
+    for _ in 0..objects.len() {
+        stmt.push_str(&row);
+    }
+  
+    // remove the trailing comma
+    stmt.pop();
+  
+    let mut params = Vec::new();
+  
+    let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
+    for o in objects.iter() {
+        let named_params: mysql_async::Params = fun(o).into();
+        let positional_params = named_params.into_positional(bytes.as_slice())?;
+        if let mysql_async::Params::Positional(new_params) = positional_params {
+            for param in new_params {
+                params.push(param);
+            }
+        }
+    }
+  
+    let mut conn = pool.get_conn().await?;
+    let result = conn.exec_drop(stmt, params).await;
+    result
+  }
+
+  pub(crate) async fn bulk_insert_update<F, P, T>(
+    pool: mysql_async::Pool,
+    table: String,
+    cols: Vec<String>,
+    update_cols: Vec<String>,
+    objects: Vec<T>,
+    fun: F,
+  ) -> mysql_async::Result<()>
+  where
+    F: Fn(&T) -> P,
+    P: Into<Params>,
+  {
+    let mut stmt = format!("INSERT INTO {} ({}) VALUES ", table, cols.join(","));
+    let row = format!(
+        "({}),",
+        cols.iter()
+            .map(|_| "?".to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    stmt.reserve(objects.len() * (cols.len() * 2 + 2));
+    for _ in 0..objects.len() {
+        stmt.push_str(&row);
+    }
+  
+    // remove the trailing comma
+    stmt.pop();
+  
+    // ON DUPLICATE KEY UPDATE
+    let formatted_string = update_cols
+      .iter()
+      .map(|field| {
+        format!("{}=VALUES({})", field, field)
+      })
+      .collect::<Vec<_>>()
+      .join(",");
+    let duplicate_key_stmt = format!(" ON DUPLICATE KEY UPDATE {}", formatted_string);
+    stmt.push_str(&duplicate_key_stmt);
+  
+    let mut params = Vec::new();
+  
+    let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
+    for o in objects.iter() {
+        let named_params: mysql_async::Params = fun(o).into();
+        let positional_params = named_params.into_positional(bytes.as_slice())?;
+        if let mysql_async::Params::Positional(new_params) = positional_params {
+            for param in new_params {
+                params.push(param);
+            }
+        }
+    }
+    let mut conn = pool.get_conn().await?;
+    let result = conn.exec_drop(stmt, params).await;
+    result
+  }
+
   pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
@@ -1538,6 +1651,44 @@ impl Vermilion {
     }
   }
 
+  pub(crate) async fn bulk_insert_transfers2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for chunk in transfer_vec.chunks(5000) {
+      let insert_result = Self::bulk_insert(pool.clone(), 
+        "transfers".to_string(), 
+        vec![
+          "id".to_string(), 
+          "block_number".to_string(), 
+          "block_timestamp".to_string(),
+          "satpoint".to_string(),
+          "transaction".to_string(),
+          "offset".to_string(),
+          "address".to_string(),
+          "is_genesis".to_string()], 
+        chunk.to_vec(), 
+        |object| {
+        params! {
+            "id" => &object.id,
+            "block_number" => object.block_number, 
+            "block_timestamp" => object.block_timestamp,
+            "satpoint" => &object.satpoint,
+            "transaction" => &object.transaction,
+            "offset" => object.offset,
+            "address" => &object.address,
+            "is_genesis" => object.is_genesis
+        }
+      }).await;
+      match insert_result {
+        Ok(_) => {},
+        Err(error) => {
+          log::warn!("Error bulk inserting transfers: {}", error);
+          return Err(Box::new(error));
+        }
+      };
+    }
+    Ok(())
+  }
+
+
   pub(crate) async fn create_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
@@ -1589,6 +1740,50 @@ impl Vermilion {
         Err(Box::new(error))
       }
     }
+  }
+
+  pub(crate) async fn bulk_insert_addresses2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for chunk in transfer_vec.chunks(5000) {
+      let insert_result = Self::bulk_insert_update(pool.clone(), 
+        "addresses".to_string(), 
+        vec![
+          "id".to_string(), 
+          "block_number".to_string(), 
+          "block_timestamp".to_string(),
+          "satpoint".to_string(),
+          "transaction".to_string(),
+          "offset".to_string(),
+          "address".to_string(),
+          "is_genesis".to_string()], 
+        vec![
+          "block_timestamp".to_string(),
+          "satpoint".to_string(),
+          "transaction".to_string(),
+          "offset".to_string(),
+          "address".to_string(),
+          "is_genesis".to_string()], 
+        chunk.to_vec(), 
+        |object| {
+        params! {
+            "id" => &object.id,
+            "block_number" => object.block_number, 
+            "block_timestamp" => object.block_timestamp,
+            "satpoint" => &object.satpoint,
+            "transaction" => &object.transaction,
+            "offset" => object.offset,
+            "address" => &object.address,
+            "is_genesis" => object.is_genesis
+        }
+      }).await;
+      match insert_result {
+        Ok(_) => {},
+        Err(error) => {
+          log::warn!("Error bulk inserting addresses: {}", error);
+          return Err(Box::new(error));
+        }
+      };
+    }
+    Ok(())
   }
 
   pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
