@@ -680,27 +680,32 @@ impl Vermilion {
             }
           };
 
+          let mut tx_map: HashMap<Txid, Transaction> = HashMap::new();
+          for tx in txs {
+            if let Some(tx) = tx {
+              tx_map.insert(tx.txid(), tx);   
+            }
+          }
+
           let t3 = Instant::now();          
           let mut id_point_address = Vec::new();
           for (id, satpoint) in transfers {
             let address = if satpoint.outpoint == unbound_outpoint() {
               "unbound".to_string()
             } else {
-              let tx = txs.iter()
-                .find(|tx| tx.as_ref().map(|tx| tx.txid() == satpoint.outpoint.txid).unwrap_or(false))
-                .unwrap()
-                .clone();
+              let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
               let output = tx
-                .unwrap()
+                .clone()
                 .output
                 .into_iter()
                 .nth(satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              options
+              let address = options
                 .chain()
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
-                .unwrap_or_else(|e| e.to_string())
+                .unwrap_or_else(|e| e.to_string());
+              address
             };
             id_point_address.push((id, satpoint, address));
           }
