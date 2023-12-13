@@ -721,8 +721,9 @@ impl Vermilion {
             transfer_vec.push(transfer);
           }
           let t5 = Instant::now();
-          let insert_transfer_result = Self::bulk_insert_transfers2(pool.clone(), transfer_vec.clone()).await;
-          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
+          let insert_transfer_result = Self::bulk_insert_transfers(pool.clone(), transfer_vec.clone()).await;
+          let t6 = Instant::now();
+          let insert_address_result = Self::bulk_insert_addresses(pool.clone(), transfer_vec).await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
@@ -734,9 +735,9 @@ impl Vermilion {
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;              
           }
-          let t6 = Instant::now();
+          let t7 = Instant::now();
           log::info!("Address indexer: Indexed block: {:?}", height);
-          log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert data: {:?} TOTAL: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t6.duration_since(t5), t6.duration_since(t0));
+          log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} - Insert addresses: {:?} TOTAL: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t6.duration_since(t5), t7.duration_since(t6), t7.duration_since(t0));
           height += 1;
         }
         println!("Address indexer stopped");
