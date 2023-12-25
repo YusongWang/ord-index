@@ -635,9 +635,9 @@ impl Vermilion {
           }
           let t2 = Instant::now();
           let mut tx_id_list = transfers.clone().into_iter().map(|(_id, satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
-          log::info!("Predupe: {:?}", tx_id_list.len());
+          //log::info!("Predupe: {:?}", tx_id_list.len());
           tx_id_list.dedup();
-          log::info!("Postdupe: {:?}", tx_id_list.len());
+          //log::info!("Postdupe: {:?}", tx_id_list.len());
           let txs = match fetcher.get_transactions(tx_id_list).await {
             Ok(txs) => {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
