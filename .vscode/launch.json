@@ -19,7 +19,7 @@
         "--n-threads=10"
       ],
       "cwd": "${workspaceFolder}",
-      "exitCommands": ["process signal SIGTERM"],
+      "exitCommands": ["process signal SIGINT"],
       "env": {"RUST_LOG": "warn"}
     },
     {
@@ -33,11 +33,11 @@
         "vermilion",
         "--http-port=1080",
         "--api-http-port=2081",
-        "--n-threads=10"
+        "--n-threads=1"
       ],
       "cwd": "${workspaceFolder}",
-      "exitCommands": ["process signal SIGTERM"],
-      "env": {"RUST_LOG": "warn"}
+      "exitCommands": ["process signal SIGINT"],
+      "env": {"RUST_LOG": "info,ord::index::updater::inscription_updater=warn"}
     },
     {
       "type": "lldb",
@@ -49,7 +49,7 @@
         "run"
       ],
       "cwd": "${workspaceFolder}",
-      "exitCommands": ["process signal SIGTERM"],
+      "exitCommands": ["process signal SIGINT"],
       "env": {"RUST_LOG": "warn", "RUST_BACKTRACE": "1"}
     }
   ]

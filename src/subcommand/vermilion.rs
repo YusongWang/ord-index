@@ -489,7 +489,7 @@ impl Vermilion {
 
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
+          let insert_result = Self::bulk_insert_metadata2(cloned_pool.clone(), metadata_vec).await;
           let t51a = Instant::now();
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let t51b = Instant::now();
@@ -553,7 +553,7 @@ impl Vermilion {
           }
           let timing = IndexerTimings {
             inscription_start: first_number,
-            inscription_end: last_number,
+            inscription_end: last_number + 1,
             acquire_permit_start: t0,
             acquire_permit_end: t1,
             get_numbers_start: t1,
@@ -726,9 +726,9 @@ impl Vermilion {
             transfer_vec.push(transfer);
           }
           let t5 = Instant::now();
-          let insert_transfer_result = Self::bulk_insert_transfers(pool.clone(), transfer_vec.clone()).await;
+          let insert_transfer_result = Self::bulk_insert_transfers2(pool.clone(), transfer_vec.clone()).await;
           let t6 = Instant::now();
-          let insert_address_result = Self::bulk_insert_addresses(pool.clone(), transfer_vec).await;
+          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
@@ -1349,6 +1349,148 @@ impl Vermilion {
       }
     }
   }
+
+  pub(crate) async fn bulk_insert_metadata2(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool.clone()).await?;
+    let tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut _exec = Self::bulk_insert(pool.clone(),
+      "ordinals".to_string(),
+      vec![
+        "id".to_string(),
+        "content_length".to_string(),
+        "content_type".to_string(),
+        "genesis_fee".to_string(),
+        "genesis_height".to_string(),
+        "genesis_transaction".to_string(),
+        "pointer".to_string(),
+        "number".to_string(),
+        "sequence_number".to_string(),
+        "parent".to_string(),
+        "metaprotocol".to_string(),
+        "embedded_metadata".to_string(),
+        "sat".to_string(),
+        "timestamp".to_string(),
+        "sha256".to_string(),
+        "text".to_string(),
+        "is_json".to_string(),
+        "is_maybe_json".to_string(),
+        "is_bitmap_style".to_string(),
+        "is_recursive".to_string()
+      ],
+      metadata_vec.clone(),
+      |metadata| params! { 
+        "id" => &metadata.id,
+        "content_length" => &metadata.content_length,
+        "content_type" => &metadata.content_type,
+        "genesis_fee" => &metadata.genesis_fee,
+        "genesis_height" => &metadata.genesis_height,
+        "genesis_transaction" => &metadata.genesis_transaction,
+        "pointer" => &metadata.pointer,
+        "number" => &metadata.number,
+        "sequence_number" => &metadata.sequence_number,
+        "parent" => &metadata.parent,
+        "metaprotocol" => &metadata.metaprotocol,
+        "embedded_metadata" => &metadata.embedded_metadata,
+        "sat" => &metadata.sat,
+        "timestamp" => &metadata.timestamp,
+        "sha256" => &metadata.sha256,
+        "text" => &metadata.text,
+        "is_json" => &metadata.is_json,
+        "is_maybe_json" => &metadata.is_maybe_json,
+        "is_bitmap_style" => &metadata.is_bitmap_style,
+        "is_recursive" => &metadata.is_recursive
+      }
+    ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        if error.to_string().contains("Duplicate entry") {
+          log::info!("Duplicates found, updating metadata");
+          let mut _exec = Self::bulk_insert_update(pool.clone(),
+            "ordinals".to_string(),
+            vec![
+              "id".to_string(),
+              "content_length".to_string(),
+              "content_type".to_string(),
+              "genesis_fee".to_string(),
+              "genesis_height".to_string(),
+              "genesis_transaction".to_string(),
+              "pointer".to_string(),
+              "number".to_string(),
+              "sequence_number".to_string(),
+              "parent".to_string(),
+              "metaprotocol".to_string(),
+              "embedded_metadata".to_string(),
+              "sat".to_string(),
+              "timestamp".to_string(),
+              "sha256".to_string(),
+              "text".to_string(),
+              "is_json".to_string(),
+              "is_maybe_json".to_string(),
+              "is_bitmap_style".to_string(),
+              "is_recursive".to_string()
+            ],
+            vec![
+              "content_length".to_string(),
+              "content_type".to_string(),
+              "genesis_fee".to_string(),
+              "genesis_height".to_string(),
+              "genesis_transaction".to_string(),
+              "pointer".to_string(),
+              "number".to_string(),
+              "sequence_number".to_string(),
+              "parent".to_string(),
+              "metaprotocol".to_string(),
+              "embedded_metadata".to_string(),
+              "sat".to_string(),
+              "timestamp".to_string(),
+              "sha256".to_string(),
+              "text".to_string(),
+              "is_json".to_string(),
+              "is_maybe_json".to_string(),
+              "is_bitmap_style".to_string(),
+              "is_recursive".to_string()
+            ],
+            metadata_vec,
+            |metadata| params! { 
+              "id" => &metadata.id,
+              "content_length" => &metadata.content_length,
+              "content_type" => &metadata.content_type,
+              "genesis_fee" => &metadata.genesis_fee,
+              "genesis_height" => &metadata.genesis_height,
+              "genesis_transaction" => &metadata.genesis_transaction,
+              "pointer" => &metadata.pointer,
+              "number" => &metadata.number,
+              "sequence_number" => &metadata.sequence_number,
+              "parent" => &metadata.parent,
+              "metaprotocol" => &metadata.metaprotocol,
+              "embedded_metadata" => &metadata.embedded_metadata,
+              "sat" => &metadata.sat,
+              "timestamp" => &metadata.timestamp,
+              "sha256" => &metadata.sha256,
+              "text" => &metadata.text,
+              "is_json" => &metadata.is_json,
+              "is_maybe_json" => &metadata.is_maybe_json,
+              "is_bitmap_style" => &metadata.is_bitmap_style,
+              "is_recursive" => &metadata.is_recursive
+            }
+          ).await;
+        } else {          
+          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
+          return Err(Box::new(error));
+        }
+      }
+    };
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        log::warn!("Error bulk inserting ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
 
   pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
