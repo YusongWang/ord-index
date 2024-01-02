@@ -489,7 +489,7 @@ impl Vermilion {
 
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata2(cloned_pool.clone(), metadata_vec).await;
+          let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
           let t51a = Instant::now();
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let t51b = Instant::now();
@@ -728,7 +728,7 @@ impl Vermilion {
           let t5 = Instant::now();
           let insert_transfer_result = Self::bulk_insert_transfers2(pool.clone(), transfer_vec.clone()).await;
           let t6 = Instant::now();
-          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
+          let insert_address_result = Self::bulk_insert_addresses(pool.clone(), transfer_vec).await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
@@ -999,7 +999,14 @@ impl Vermilion {
       }
     };
     let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
-    let metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
+    let mut metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
+    if let Some(mut metaprotocol_inner) = metaprotocol.clone() {
+      if metaprotocol_inner.len() > 100 {
+        log::warn!("Metaprotocol too long: {} - {}, truncating", inscription_id, metaprotocol_inner);
+        //metaprotocol_inner.truncate(100);
+        //metaprotocol = Some(metaprotocol_inner);
+      }
+    }
     let embedded_metadata = inscription.metadata().map_or(None, |cbor| Some(Self::cbor_to_json(cbor).to_string()));
     let sha256 = match inscription.body() {
       Some(body) => {
@@ -1110,7 +1117,7 @@ impl Vermilion {
           number bigint,
           sequence_number bigint unsigned,
           parent varchar(80),
-          metaprotocol varchar(40),
+          metaprotocol mediumtext,
           embedded_metadata mediumtext,
           sat bigint,
           timestamp bigint,
@@ -1126,8 +1133,7 @@ impl Vermilion {
           INDEX index_block (genesis_height),
           INDEX index_sha256 (sha256),
           INDEX index_sat (sat),
-          INDEX index_parent (parent),
-          INDEX index_metaprotocol (metaprotocol)
+          INDEX index_parent (parent)
       )").await.unwrap();
     Ok(())
   }
@@ -1209,7 +1215,9 @@ impl Vermilion {
     }
   
     let mut conn = pool.get_conn().await?;
-    let result = conn.exec_drop(stmt, params).await;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let result = tx.exec_drop(stmt, params).await;
+    tx.commit().await?;
     result
   }
 
@@ -2752,7 +2760,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       END IF;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT editions_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) DO CALL update_editions()").await.unwrap();
+    tx.query_drop(r"CREATE EVENT editions_event 
+                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
+                          DO
+                          BEGIN
+                            SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+                            CALL update_editions();
+                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+                          END;").await.unwrap();
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -2906,7 +2921,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_5;
       END;"#).await.unwrap();
     tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT weights_event ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) DO CALL update_weights()").await.unwrap();
+    tx.query_drop(r"CREATE EVENT weights_event 
+                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
+                          DO
+                          BEGIN
+                            SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+                            CALL update_weights();
+                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+                          END;").await.unwrap();
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
