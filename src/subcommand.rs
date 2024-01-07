@@ -13,8 +13,8 @@ pub mod subsidy;
 pub mod supply;
 pub mod teleburn;
 pub mod traits;
-pub mod wallet;
 mod vermilion;
+pub mod wallet;
 
 #[derive(Debug, Parser)]
 pub(crate) enum Subcommand {
@@ -72,9 +72,7 @@ impl Subcommand {
       Self::Teleburn(teleburn) => teleburn.run(),
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
-      Self::Vermilion(vermilion) => {        
-        vermilion.run(options)
-      }
+      Self::Vermilion(vermilion) => vermilion.run(options),
     }
   }
 }

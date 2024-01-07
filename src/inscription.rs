@@ -36,6 +36,94 @@ pub struct Inscription {
   pub unrecognized_even_field: bool,
 }
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TxDmt {
+    pub args: DmtArgs,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DmtArgs {
+    pub time: i64,
+    pub nonce: i64,
+    pub bitworkc: String,
+    pub bitworkr: String,
+    #[serde(rename = "mint_ticker")]
+    pub mint_ticker: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Atom {
+  pub args: Args,
+  pub desc: String,
+  pub name: String,
+  pub image: String,
+  pub legal: serde_json::Value,
+  pub links: serde_json::Value,
+  pub decimals: i64,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Args {
+  pub time: i64,
+  pub nonce: i64,
+  pub bitworkc: String,
+  #[serde(rename = "max_mints")]
+  pub max_mints: i64,
+  #[serde(rename = "mint_amount")]
+  pub mint_amount: i64,
+  #[serde(rename = "mint_height")]
+  pub mint_height: i64,
+  #[serde(rename = "mint_bitworkc")]
+  pub mint_bitworkc: String,
+  #[serde(rename = "mint_bitworkr")]
+  pub mint_bitworkr: String,
+  #[serde(rename = "request_ticker")]
+  pub request_ticker: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Legal {
+  pub terms: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Links {
+  pub x: X,
+  pub realm: Realm,
+  pub discord: Discord,
+  pub website: Website,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct X {
+  pub v: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Realm {
+  pub v: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Discord {
+  pub v: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Website {
+  pub v: String,
+}
+
 impl Inscription {
   #[cfg(test)]
   pub(crate) fn new(content_type: Option<Vec<u8>>, body: Option<Vec<u8>>) -> Self {
@@ -95,7 +183,7 @@ impl Inscription {
     builder = builder
       .push_opcode(opcodes::OP_FALSE)
       .push_opcode(opcodes::all::OP_IF)
-      .push_slice(envelope::PROTOCOL_ID);
+      .push_slice(envelope::PROTOCOL_ORD_ID);
 
     if let Some(content_type) = self.content_type.clone() {
       builder = builder

@@ -1,22 +1,21 @@
 # Example Config
 
 # use username `bar` and password `foo` for bitcoind RPC calls
-bitcoin_rpc_user: bar
-bitcoin_rpc_pass: foo
+bitcoin_rpc_user: btc
+bitcoin_rpc_pass: btc2018
 
 # prevent `ord server` from serving the content of the inscriptions below
 hidden:
-- 6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0
-- 703e5f7c49d82aab99e605af306b9a30e991e57d42f982908a962a81ac439832i0
+
 
 # DB must already exist, tables will be automatically created
-db_connection_string: mysql://username:password@localhost:3306/database_name
+db_connection_string: mysql://root:12345678@localhost:3306/ord
 
 # if you want to reindex (i.e. new db/new db format/new s3 bucket), this will setting will start the indexer from the desired number, rather than the last populated number in db
 # start_number_override: 0
 
 # AWS S3 bucket name
-s3_bucket_name: vermilion-ordinals
+s3_bucket_name: brc20
 
 # Skip uploading inscription numbers before this number. Saves money if you have already uploaded inscriptions to s3
 s3_upload_start_number: 0

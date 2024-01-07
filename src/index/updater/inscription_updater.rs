@@ -74,12 +74,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     timestamp: u32,
     unbound_inscriptions: u64,
     value_cache: &'a mut HashMap<OutPoint, u64>,
-    height_to_transfers: &'a mut MultimapTable<
-      'db,
-      'tx,
-      u64,
-      &'static [u8; 80],
-    >,
+    height_to_transfers: &'a mut MultimapTable<'db, 'tx, u64, &'static [u8; 80]>,
   ) -> Result<Self> {
     let next_sequence_number = sequence_number_to_id
       .iter()?

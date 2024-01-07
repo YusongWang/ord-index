@@ -1,3 +1,9 @@
+use core::panic;
+
+use log::info;
+
+use crate::inscription::TxDmt;
+
 use {
   super::*,
   bitcoin::blockdata::{
@@ -6,7 +12,15 @@ use {
   },
 };
 
-pub(crate) const PROTOCOL_ID: [u8; 3] = *b"ord";
+pub(crate) const PROTOCOL_ORD_ID: [u8; 3] = *b"ord";
+pub(crate) const PROTOCOL_ATOM_ID: [u8; 4] = *b"atom";
+
+pub(crate) const PROTOCOL_ATOM_NFT: [u8; 3] = *b"nft";
+pub(crate) const PROTOCOL_ATOM_DFT: [u8; 3] = *b"dft";
+pub(crate) const PROTOCOL_ATOM_MOD: [u8; 3] = *b"mod";
+pub(crate) const PROTOCOL_ATOM_EVT: [u8; 3] = *b"evt";
+pub(crate) const PROTOCOL_ATOM_DMT: [u8; 3] = *b"dmt";
+pub(crate) const PROTOCOL_ATOM_DAT: [u8; 3] = *b"dat";
 
 pub(crate) const BODY_TAG: [u8; 0] = [];
 pub(crate) const CONTENT_TYPE_TAG: [u8; 1] = [1];
@@ -18,13 +32,30 @@ pub(crate) const METAPROTOCOL_TAG: [u8; 1] = [7];
 type Result<T> = std::result::Result<T, script::Error>;
 type RawEnvelope = Envelope<Vec<Vec<u8>>>;
 pub(crate) type ParsedEnvelope = Envelope<Inscription>;
+pub(crate) type ParsedAtom = Envelope<TxDmt>;
 
+#[derive(Debug,Default, PartialEq, Clone)]
+pub enum AtomProtocol {
+  #[default] NFT,
+  DFT,
+  MOD,
+  EVT,
+  DMT,
+  DAT,
+}
+
+#[derive(Debug,Default, PartialEq, Clone)]
+pub enum EnvelopeType {
+  #[default] ORD,
+  ATOM(AtomProtocol),
+}
 #[derive(Debug, Default, PartialEq, Clone)]
 pub(crate) struct Envelope<T> {
   pub(crate) payload: T,
   pub(crate) input: u32,
   pub(crate) offset: u32,
   pub(crate) pushnum: bool,
+  pub(crate) e_type: EnvelopeType,
 }
 
 fn remove_field(fields: &mut BTreeMap<&[u8], Vec<&[u8]>>, field: &[u8]) -> Option<Vec<u8>> {
@@ -108,11 +139,36 @@ impl From<RawEnvelope> for ParsedEnvelope {
       input: envelope.input,
       offset: envelope.offset,
       pushnum: envelope.pushnum,
+      e_type: envelope.e_type,
     }
   }
 }
 
 impl ParsedEnvelope {
+  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
+    RawEnvelope::from_transaction(transaction)
+      .into_iter()
+      .map(|envelope| envelope.into())
+      .collect()
+  }
+}
+
+impl From<RawEnvelope> for ParsedAtom {
+  fn from(envelope: RawEnvelope) -> Self {
+    let body = envelope.payload.first().unwrap();
+    let payload:TxDmt = ciborium::from_reader(body.as_slice()).unwrap();
+    dbg!(&payload);
+    Self {
+      payload,
+      input: envelope.input,
+      offset: envelope.offset,
+      pushnum: envelope.pushnum,
+      e_type: envelope.e_type,
+    }
+  }
+}
+
+impl ParsedAtom {
   pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
     RawEnvelope::from_transaction(transaction)
       .into_iter()
@@ -138,7 +194,6 @@ impl RawEnvelope {
 
   fn from_tapscript(tapscript: &Script, input: usize) -> Result<Vec<Self>> {
     let mut envelopes = Vec::new();
-
     let mut instructions = tapscript.instructions();
 
     while let Some(instruction) = instructions.next() {
@@ -162,99 +217,207 @@ impl RawEnvelope {
       return Ok(None);
     }
 
-    if instructions.next().transpose()? != Some(Instruction::PushBytes((&PROTOCOL_ID).into())) {
-      return Ok(None);
-    }
+    let check_flag = instructions.next().transpose()?;
 
-    let mut pushnum = false;
+    // This is the protocol ord
 
-    let mut payload = Vec::new();
+    if check_flag == Some(Instruction::PushBytes((&PROTOCOL_ORD_ID).into())) {
+      let mut pushnum = false;
+      let mut payload = Vec::new();
 
-    loop {
-      match instructions.next().transpose()? {
-        None => return Ok(None),
-        Some(Instruction::Op(opcodes::all::OP_ENDIF)) => {
-          return Ok(Some(Envelope {
-            input: input.try_into().unwrap(),
-            offset: offset.try_into().unwrap(),
-            payload,
-            pushnum,
-          }));
+      loop {
+        match instructions.next().transpose()? {
+          None => return Ok(None),
+          Some(Instruction::Op(opcodes::all::OP_ENDIF)) => {
+            return Ok(Some(Envelope {
+              input: input.try_into().unwrap(),
+              offset: offset.try_into().unwrap(),
+              payload,
+              pushnum,
+              e_type: EnvelopeType::ORD,
+            }));
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_NEG1)) => {
+            pushnum = true;
+            payload.push(vec![0x81]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_1)) => {
+            pushnum = true;
+            payload.push(vec![1]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_2)) => {
+            pushnum = true;
+            payload.push(vec![2]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_3)) => {
+            pushnum = true;
+            payload.push(vec![3]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_4)) => {
+            pushnum = true;
+            payload.push(vec![4]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_5)) => {
+            pushnum = true;
+            payload.push(vec![5]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_6)) => {
+            pushnum = true;
+            payload.push(vec![6]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_7)) => {
+            pushnum = true;
+            payload.push(vec![7]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_8)) => {
+            pushnum = true;
+            payload.push(vec![8]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_9)) => {
+            pushnum = true;
+            payload.push(vec![9]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_10)) => {
+            pushnum = true;
+            payload.push(vec![10]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_11)) => {
+            pushnum = true;
+            payload.push(vec![11]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_12)) => {
+            pushnum = true;
+            payload.push(vec![12]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_13)) => {
+            pushnum = true;
+            payload.push(vec![13]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_14)) => {
+            pushnum = true;
+            payload.push(vec![14]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_15)) => {
+            pushnum = true;
+            payload.push(vec![15]);
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_16)) => {
+            pushnum = true;
+            payload.push(vec![16]);
+          }
+          Some(Instruction::PushBytes(push)) => {
+            payload.push(push.as_bytes().to_vec());
+          }
+          Some(_) => return Ok(None),
         }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_NEG1)) => {
-          pushnum = true;
-          payload.push(vec![0x81]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_1)) => {
-          pushnum = true;
-          payload.push(vec![1]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_2)) => {
-          pushnum = true;
-          payload.push(vec![2]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_3)) => {
-          pushnum = true;
-          payload.push(vec![3]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_4)) => {
-          pushnum = true;
-          payload.push(vec![4]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_5)) => {
-          pushnum = true;
-          payload.push(vec![5]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_6)) => {
-          pushnum = true;
-          payload.push(vec![6]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_7)) => {
-          pushnum = true;
-          payload.push(vec![7]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_8)) => {
-          pushnum = true;
-          payload.push(vec![8]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_9)) => {
-          pushnum = true;
-          payload.push(vec![9]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_10)) => {
-          pushnum = true;
-          payload.push(vec![10]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_11)) => {
-          pushnum = true;
-          payload.push(vec![11]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_12)) => {
-          pushnum = true;
-          payload.push(vec![12]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_13)) => {
-          pushnum = true;
-          payload.push(vec![13]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_14)) => {
-          pushnum = true;
-          payload.push(vec![14]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_15)) => {
-          pushnum = true;
-          payload.push(vec![15]);
-        }
-        Some(Instruction::Op(opcodes::all::OP_PUSHNUM_16)) => {
-          pushnum = true;
-          payload.push(vec![16]);
-        }
-        Some(Instruction::PushBytes(push)) => {
-          payload.push(push.as_bytes().to_vec());
-        }
-        Some(_) => return Ok(None),
       }
     }
+
+    if check_flag == Some(Instruction::PushBytes((&PROTOCOL_ATOM_ID).into())) {
+      let mut payload = Vec::new();
+      let mut pushnum = false;
+      let mut e_type = EnvelopeType::ATOM(AtomProtocol::default());
+
+      loop {
+        let op_code = instructions.next().transpose()?;
+
+        match op_code {
+          None => return Ok(None),
+          Some(Instruction::Op(opcodes::all::OP_ENDIF)) => {
+            return Ok(Some(Envelope {
+              input: input.try_into().unwrap(),
+              offset: offset.try_into().unwrap(),
+              payload,
+              pushnum,
+              e_type,
+            }));
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_NEG1)) => {
+            info!("Got Atom Protocol Pushnum Neg1");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_1)) => {
+            info!("Got Atom Protocol Pushnum 1");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_2)) => {
+            info!("Got Atom Protocol Pushnum 2");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_3)) => {
+            info!("Got Atom Protocol Pushnum 3");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_4)) => {
+            info!("Got Atom Protocol Pushnum 4");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_5)) => {
+            info!("Got Atom Protocol Pushnum 5");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_6)) => {
+            info!("Got Atom Protocol Pushnum 6");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_7)) => {
+            info!("Got Atom Protocol Pushnum 7");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_8)) => {
+            info!("Got Atom Protocol Pushnum 8");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_9)) => {
+            info!("Got Atom Protocol Pushnum 9");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_10)) => {
+            info!("Got Atom Protocol Pushnum 10");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_11)) => {
+            info!("Got Atom Protocol Pushnum 11");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_12)) => {
+            info!("Got Atom Protocol Pushnum 12");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_13)) => {
+            info!("Got Atom Protocol Pushnum 13");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_14)) => {
+            info!("Got Atom Protocol Pushnum 14");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_15)) => {
+            info!("Got Atom Protocol Pushnum 15");
+          }
+          Some(Instruction::Op(opcodes::all::OP_PUSHNUM_16)) => {
+            info!("Got Atom Protocol Pushnum 16");
+          }
+          Some(Instruction::PushBytes(push)) => {
+            let three_letter_op_len = 3;
+            if push.len() == three_letter_op_len {
+              let atom_op = push.as_bytes();
+              if atom_op == PROTOCOL_ATOM_NFT {
+                dbg!("Got Atom Protocol NFT");
+                e_type = EnvelopeType::ATOM(AtomProtocol::NFT);
+              } else if atom_op == PROTOCOL_ATOM_DFT {
+                // Deploy FT
+                dbg!("Got Atom Protocol DFT");
+                e_type = EnvelopeType::ATOM(AtomProtocol::DFT);
+              } else if atom_op == PROTOCOL_ATOM_MOD {
+                dbg!("Got Atom Protocol MOD");
+                e_type = EnvelopeType::ATOM(AtomProtocol::MOD);
+              } else if atom_op == PROTOCOL_ATOM_EVT {
+                dbg!("Got Atom Protocol EVT");
+                e_type = EnvelopeType::ATOM(AtomProtocol::EVT);
+              } else if atom_op == PROTOCOL_ATOM_DMT {
+                e_type = EnvelopeType::ATOM(AtomProtocol::DMT);
+                dbg!("Got Atom Protocol DMT");
+              } else if atom_op == PROTOCOL_ATOM_DAT {
+                e_type = EnvelopeType::ATOM(AtomProtocol::DAT);
+                dbg!("Got Atom Protocol DAT");
+              }
+            } else {
+              pushnum = true;
+              payload.push(push.as_bytes().to_vec());
+            }
+          }
+          Some(_) => return Ok(None),
+        }
+      }
+    }
+
+    Ok(None)
   }
 }
 

@@ -10,7 +10,7 @@ pub(crate) struct Config {
   pub(crate) start_number_override: Option<u64>,
   pub(crate) s3_bucket_name: Option<String>,
   pub(crate) s3_upload_start_number: Option<u64>,
-  pub(crate) s3_head_check: Option<bool>
+  pub(crate) s3_head_check: Option<bool>,
 }
 
 impl Config {

@@ -1,49 +1,49 @@
 use super::*;
+use crate::envelope::ParsedAtom;
+use crate::index::fetcher;
+use crate::subcommand::server;
 use axum_server::Handle;
 use mysql_async::Params;
-use crate::subcommand::server;
-use crate::index::fetcher;
 
-use mysql_async::TxOpts;
-use mysql_async::Pool;
-use mysql_async::prelude::Queryable;
 use mysql_async::params;
+use mysql_async::prelude::Queryable;
+use mysql_async::Pool;
 use mysql_async::Row;
-use tokio::sync::Semaphore;
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
+use mysql_async::TxOpts;
 use serde::Serialize;
 use sha256::digest;
+use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
-use s3::operation::get_object::GetObjectOutput;
-use aws_sdk_s3 as s3;	
-use s3::primitives::ByteStream;	
+use aws_sdk_s3 as s3;
 use s3::error::ProvideErrorMetadata;
+use s3::operation::get_object::GetObjectOutput;
+use s3::primitives::ByteStream;
 
 use axum::{
-  routing::get,
-  Json, 
-  Router,
-  extract::{Path, State, Query},
   body::{Body, BoxBody},
-  middleware::map_response
+  extract::{Path, Query, State},
+  middleware::map_response,
+  routing::get,
+  Json, Router,
 };
-use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, SessionLayer};
+use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
 
-use tower_http::trace::TraceLayer;
-use tower_http::trace::DefaultMakeSpan;
-use tracing::Span;
 use http::{Request, Response};
+use tower_http::trace::DefaultMakeSpan;
+use tower_http::trace::TraceLayer;
 use tracing::Level as TraceLevel;
+use tracing::Span;
 
+use rand::Rng;
+use rand::SeedableRng;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::thread::JoinHandle;
-use rand::Rng;
-use rand::SeedableRng;
 
-use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
+use serde_json::{value::Number as JsonNumber, Value as JsonValue};
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -91,8 +91,11 @@ pub(crate) struct Vermilion {
     help = "Number of threads to use when uploading content and metadata. [default: 1]."
   )]
   n_threads: Option<u16>,
-  #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
-  pub run_api_server_only: bool
+  #[arg(
+    long,
+    help = "Only run api server, do not run indexer. [default: false]."
+  )]
+  pub run_api_server_only: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -116,7 +119,7 @@ pub struct Metadata {
   is_json: bool,
   is_maybe_json: Option<bool>,
   is_bitmap_style: Option<bool>,
-  is_recursive: Option<bool>
+  is_recursive: Option<bool>,
 }
 
 #[derive(Clone, Serialize)]
@@ -132,13 +135,13 @@ pub struct SatMetadata {
   offset: u64,
   rarity: String,
   percentile: String,
-  timestamp: i64
+  timestamp: i64,
 }
 
 pub struct ContentBlob {
   sha256: String,
   content: Vec<u8>,
-  content_type: String
+  content_type: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -150,7 +153,7 @@ pub struct Transfer {
   transaction: String,
   offset: u32,
   address: String,
-  is_genesis: bool
+  is_genesis: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -181,13 +184,13 @@ pub struct TransferWithMetadata {
   is_json: bool,
   is_maybe_json: Option<bool>,
   is_bitmap_style: Option<bool>,
-  is_recursive: Option<bool>
+  is_recursive: Option<bool>,
 }
 
 #[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
-  content_type: Option<String>
+  content_type: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -195,7 +198,7 @@ pub struct InscriptionNumberEdition {
   id: String,
   number: i64,
   edition: u64,
-  total: u64
+  total: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -206,26 +209,26 @@ pub struct InscriptionMetadataForBlock {
   genesis_fee: i64,
   genesis_height: i64,
   number: i64,
-  timestamp: i64
+  timestamp: i64,
 }
 
 #[derive(Deserialize)]
 pub struct QueryNumber {
-  n: u32
+  n: u32,
 }
 
 pub struct RandomInscriptionBand {
   sequence_number: u64,
   start: f64,
-  end: f64
+  end: f64,
 }
 
 pub struct SequenceNumberStatus {
   sequence_number: u64,
-  status: String
+  status: String,
 }
 
-#[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub struct IndexerTimings {
   inscription_start: u64,
   inscription_end: u64,
@@ -246,14 +249,14 @@ pub struct IndexerTimings {
   metadata_insertion: Duration,
   sat_insertion: Duration,
   content_insertion: Duration,
-  locking: Duration
+  locking: Duration,
 }
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
   pool: mysql_async::Pool,
   s3client: s3::Client,
-  bucket_name: String
+  bucket_name: String,
 }
 
 const INDEX_BATCH_SIZE: usize = 500;
@@ -265,15 +268,16 @@ impl Vermilion {
     let vermilion_server_clone = self.clone();
     let vermilion_server_thread = vermilion_server_clone.run_vermilion_server(options.clone());
 
-    if self.run_api_server_only {//If only running api server, block here, early return on ctrl-c
+    if self.run_api_server_only {
+      //If only running api server, block here, early return on ctrl-c
       let rt = Runtime::new().unwrap();
       rt.block_on(async {
-        loop {            
+        loop {
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
             break;
           }
           tokio::time::sleep(Duration::from_secs(10)).await;
-        }          
+        }
       });
       return Ok(Box::new(Empty {}) as Box<dyn Output>);
     }
@@ -284,12 +288,14 @@ impl Vermilion {
     let handle = axum_server::Handle::new();
     LISTENERS.lock().unwrap().push(handle.clone());
     let ordinals_server_clone = self.clone();
-    let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
+    let ordinals_server_thread =
+      ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
 
     //3. Run Address Indexer
     println!("Address Indexer Starting");
     let address_indexer_clone = self.clone();
-    let address_indexer_thread = address_indexer_clone.run_address_indexer(options.clone(), index.clone());
+    let address_indexer_thread =
+      address_indexer_clone.run_address_indexer(options.clone(), index.clone());
 
     //4. Run Inscription Indexer
     println!("Inscription Indexer Starting");
@@ -306,9 +312,9 @@ impl Vermilion {
 
   pub(crate) fn run_inscription_indexer(self, options: Options, index: Arc<Index>) {
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+      .enable_all()
+      .build()
+      .unwrap();
     rt.block_on(async {
       let config = options.load_config().unwrap();
       let url = config.db_connection_string.unwrap();
@@ -352,7 +358,7 @@ impl Vermilion {
         }
         let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = index.clone();
-        let cloned_pool = pool.clone();        
+        let cloned_pool = pool.clone();
         let cloned_s3client = s3client.clone();
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
@@ -372,7 +378,7 @@ impl Vermilion {
           let mut should_sleep = false;
           let first_number = needed_numbers[0];
           let mut last_number = needed_numbers[needed_numbers.len()-1];
-          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
+          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);
 
           //1. Get ids
           let t2 = Instant::now();
@@ -388,18 +394,18 @@ impl Vermilion {
                 last_number = j;
                 let status_vector = cloned_status_vector.clone();
                 let mut locked_status_vector = status_vector.lock().await;
-                for l in needed_numbers.clone() {                  
+                for l in needed_numbers.clone() {
                   let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == l).unwrap();
                   if l >= j {
                     status.status = "NOT_FOUND_LOCKED".to_string();
-                  }                
+                  }
                 }
                 should_sleep = true;
                 break;
               }
             }
           }
-          
+
           //2. Get inscriptions
           let t3 = Instant::now();
           let cloned_ids = inscription_ids.clone();
@@ -411,15 +417,15 @@ impl Vermilion {
                 let status_vector = cloned_status_vector.clone();
                 { //Enclosing braces to drop the mutex so sleep doesn't block
                   let mut locked_status_vector = status_vector.lock().await;
-                  for j in needed_numbers.clone() {                  
+                  for j in needed_numbers.clone() {
                     let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
                     status.status = "ERROR".to_string();
                   }
                 }
                 println!("error string: {}", error.to_string());
-                if  error.to_string().contains("Failed to fetch raw transaction") || 
-                    error.to_string().contains("connection closed") || 
-                    error.to_string().contains("error trying to connect") || 
+                if  error.to_string().contains("Failed to fetch raw transaction") ||
+                    error.to_string().contains("connection closed") ||
+                    error.to_string().contains("error trying to connect") ||
                     error.to_string().contains("end of file") {
                   println!("Pausing for 60s & Breaking from loop");
                   //std::mem::drop(locked_status_vector); //Drop the mutex so sleep doesn't block
@@ -449,14 +455,14 @@ impl Vermilion {
             .zip(cloned_ids.into_iter())
             .zip(cloned_inscriptions.into_iter())
             .map(|((x, y), z)| (x, y, z))
-            .collect();          
+            .collect();
           for (number, inscription_id, inscription) in number_id_inscriptions.clone() {
             if number < s3_upload_start_number {
                 continue;
             }
             Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription, s3_head_check).await;	//TODO: Handle errors
           }
-          
+
           //4. Get ordinal metadata
           let t5 = Instant::now();
           let status_vector = cloned_status_vector.clone();
@@ -476,14 +482,14 @@ impl Vermilion {
                   continue;
                 }
             };
-            metadata_vec.push(metadata);            
+            metadata_vec.push(metadata);
             match sat_metadata {
               Some(sat_metadata) => {
                 sat_metadata_vec.push(sat_metadata);
               },
-              None => {}                
+              None => {}
             }
-            let t1 = Instant::now();            
+            let t1 = Instant::now();
             retrieval += t1.duration_since(t0);
           }
 
@@ -527,13 +533,13 @@ impl Vermilion {
             }
             should_sleep = true;
             let mut locked_status_vector = status_vector.lock().await;
-            for j in needed_numbers.clone() {              
+            for j in needed_numbers.clone() {
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
               status.status = "ERROR".to_string();
             }
           } else {
             let mut locked_status_vector = status_vector.lock().await;
-            for j in needed_numbers.clone() {              
+            for j in needed_numbers.clone() {
               let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
               //_LOCKED state to prevent other threads from changing status before current thread completes
               if status.status != "NOT_FOUND_LOCKED" && status.status != "ERROR_LOCKED" {
@@ -545,7 +551,7 @@ impl Vermilion {
               }
             }
           }
-          
+
           //5. Log timings
           let t6 = Instant::now();
           if first_number != last_number {
@@ -580,14 +586,14 @@ impl Vermilion {
           if should_sleep {
             tokio::time::sleep(Duration::from_secs(60)).await;
           }
-        });        
-        
+        });
+
       }
     })
   }
 
   pub(crate) fn run_address_indexer(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
-    let address_indexer_thread = thread::spawn(move ||{
+    let address_indexer_thread = thread::spawn(move || {
       let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -628,7 +634,7 @@ impl Vermilion {
               continue;
             }
           };
-          
+
           if transfers.len() == 0 {
             height += 1;
             continue;
@@ -654,7 +660,7 @@ impl Vermilion {
                   }
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
                     Ok(mut tx) => Some(tx.pop().unwrap()),
-                    Err(e) => {                      
+                    Err(e) => {
                       let miner_outpoint = OutPoint{
                         txid: Hash::all_zeros(),
                         vout: 0
@@ -676,18 +682,18 @@ impl Vermilion {
                 log::info!("Unknown Error getting transfer transactions for block height: {:?} - {:?} - Waiting a minute", height, e);
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
-              }              
+              }
             }
           };
 
           let mut tx_map: HashMap<Txid, Transaction> = HashMap::new();
           for tx in txs {
             if let Some(tx) = tx {
-              tx_map.insert(tx.txid(), tx);   
+              tx_map.insert(tx.txid(), tx);
             }
           }
 
-          let t3 = Instant::now();          
+          let t3 = Instant::now();
           let mut id_point_address = Vec::new();
           for (id, satpoint) in transfers {
             let address = if satpoint.outpoint == unbound_outpoint() {
@@ -738,7 +744,7 @@ impl Vermilion {
               log::info!("Address Error: {:?}", insert_address_result.unwrap_err());
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;              
+            continue;
           }
           let t7 = Instant::now();
           log::info!("Address indexer: Indexed block: {:?}", height);
@@ -752,7 +758,7 @@ impl Vermilion {
   }
 
   pub(crate) fn run_vermilion_server(self, options: Options) -> JoinHandle<()> {
-    let verm_server_thread = thread::spawn(move ||{
+    let verm_server_thread = thread::spawn(move || {
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
         let config = options.load_config().unwrap();
@@ -761,16 +767,17 @@ impl Vermilion {
         let bucket_name = config.s3_bucket_name.unwrap();
         let s3_config = aws_config::from_env().load().await;
         let s3client = s3::Client::new(&s3_config);
-        
+
         let server_config = ApiServerConfig {
-          pool: pool,
-          s3client: s3client,
-          bucket_name: bucket_name
+          pool,
+          s3client,
+          bucket_name,
         };
 
-        let session_config = SessionConfig::default()
-          .with_table_name("sessions_table");
-        let session_store = SessionStore::<SessionNullPool>::new(None, session_config).await.unwrap();
+        let session_config = SessionConfig::default().with_table_name("sessions_table");
+        let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
+          .await
+          .unwrap();
 
         let app = Router::new()
           .route("/", get(Self::root))
@@ -778,32 +785,77 @@ impl Vermilion {
           .route("/inscription/:inscription_id", get(Self::inscription))
           .route("/inscription_number/:number", get(Self::inscription_number))
           .route("/inscription_sha256/:sha256", get(Self::inscription_sha256))
-          .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
-          .route("/inscription_metadata_number/:number", get(Self::inscription_metadata_number))
-          .route("/inscription_editions/:inscription_id", get(Self::inscription_editions))
-          .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
-          .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
-          .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .route(
+            "/inscription_metadata/:inscription_id",
+            get(Self::inscription_metadata),
+          )
+          .route(
+            "/inscription_metadata_number/:number",
+            get(Self::inscription_metadata_number),
+          )
+          .route(
+            "/inscription_editions/:inscription_id",
+            get(Self::inscription_editions),
+          )
+          .route(
+            "/inscription_editions_number/:number",
+            get(Self::inscription_editions_number),
+          )
+          .route(
+            "/inscription_editions_sha256/:sha256",
+            get(Self::inscription_editions_sha256),
+          )
+          .route(
+            "/inscriptions_in_block/:block",
+            get(Self::inscriptions_in_block),
+          )
           .route("/random_inscription", get(Self::random_inscription))
           .route("/random_inscriptions", get(Self::random_inscriptions))
-          .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
-          .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
-          .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
-          .route("/inscription_transfers_number/:number", get(Self::inscription_transfers_number))
-          .route("/inscriptions_in_address/:address", get(Self::inscriptions_in_address))
+          .route(
+            "/inscription_last_transfer/:inscription_id",
+            get(Self::inscription_last_transfer),
+          )
+          .route(
+            "/inscription_last_transfer_number/:number",
+            get(Self::inscription_last_transfer_number),
+          )
+          .route(
+            "/inscription_transfers/:inscription_id",
+            get(Self::inscription_transfers),
+          )
+          .route(
+            "/inscription_transfers_number/:number",
+            get(Self::inscription_transfers_number),
+          )
+          .route(
+            "/inscriptions_in_address/:address",
+            get(Self::inscriptions_in_address),
+          )
           .route("/inscriptions_on_sat/:sat", get(Self::inscriptions_on_sat))
-          .route("/inscriptions_in_sat_block/:block", get(Self::inscriptions_in_sat_block))
+          .route(
+            "/inscriptions_in_sat_block/:block",
+            get(Self::inscriptions_in_sat_block),
+          )
           .route("/sat_metadata/:sat", get(Self::sat_metadata))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
               .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
               .on_request(|req: &Request<Body>, _span: &Span| {
-                tracing::event!(TraceLevel::INFO, "Started processing request {}", req.uri().path());
+                tracing::event!(
+                  TraceLevel::INFO,
+                  "Started processing request {}",
+                  req.uri().path()
+                );
               })
               .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
-                tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
-              })
+                tracing::event!(
+                  TraceLevel::INFO,
+                  "Finished processing request latency={:?} status={:?}",
+                  latency,
+                  res.status()
+                );
+              }),
           )
           .with_state(server_config)
           .layer(SessionLayer::new(session_store));
@@ -811,17 +863,22 @@ impl Vermilion {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
         //tracing::debug!("listening on {}", addr);
         axum::Server::bind(&addr)
-            .serve(app.into_make_service())
-            .with_graceful_shutdown(Self::shutdown_signal())
-            .await
-            .unwrap();
+          .serve(app.into_make_service())
+          .with_graceful_shutdown(Self::shutdown_signal())
+          .await
+          .unwrap();
       });
       println!("Vermilion server stopped");
     });
     return verm_server_thread;
   }
 
-  pub(crate) fn run_ordinals_server(self, options: Options, index: Arc<Index>, handle: Handle) -> JoinHandle<()> {
+  pub(crate) fn run_ordinals_server(
+    self,
+    options: Options,
+    index: Arc<Index>,
+    handle: Handle,
+  ) -> JoinHandle<()> {
     //1. Ordinals Server
     let server = server::Server {
       address: self.address,
@@ -840,7 +897,7 @@ impl Vermilion {
       match server_result {
         Ok(_) => {
           println!("Ordinals server stopped");
-        },
+        }
         Err(err) => {
           println!("Ordinals server failed to start: {:?}", err);
         }
@@ -850,71 +907,99 @@ impl Vermilion {
   }
 
   //Inscription Indexer Helper functions
-  pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
-    let id = inscription_id.to_string();	
+  pub(crate) async fn upload_ordinal_content(
+    client: &s3::Client,
+    bucket_name: &str,
+    inscription_id: InscriptionId,
+    inscription: Inscription,
+    head_check: bool,
+  ) {
+    let id = inscription_id.to_string();
     let key = format!("content/{}", id);
     if head_check {
-      let head_status = client	
-        .head_object()	
-        .bucket(bucket_name)	
-        .key(key.clone())	
-        .send()	
+      let head_status = client
+        .head_object()
+        .bucket(bucket_name)
+        .key(key.clone())
+        .send()
         .await;
-      match head_status {	
-        Ok(_) => {	
-          log::debug!("Ordinal content already exists in S3: {}", id.clone());	
-          return;	
-        }	
-        Err(error) => {	
+      match head_status {
+        Ok(_) => {
+          log::debug!("Ordinal content already exists in S3: {}", id.clone());
+          return;
+        }
+        Err(error) => {
           if error.to_string() == "service error" {
             let service_error = error.into_service_error();
             if service_error.to_string() != "NotFound" {
-              println!("Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}", id.clone(), service_error, service_error.message(), service_error.code());	
-              return;	//error
+              println!(
+                "Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}",
+                id.clone(),
+                service_error,
+                service_error.message(),
+                service_error.code()
+              );
+              return; //error
             } else {
               log::trace!("Ordinal {} not found in S3, uploading", id.clone());
             }
           } else {
-            println!("Error checking if ordinal {} exists in S3: {} - {:?}", id.clone(), error, error.message());	
+            println!(
+              "Error checking if ordinal {} exists in S3: {} - {:?}",
+              id.clone(),
+              error,
+              error.message()
+            );
             return; //error
           }
         }
       };
     }
-    
-    let body = Inscription::body(&inscription);	
-    let bytes = match body {	
-      Some(body) => body.to_vec(),	
-      None => {	
-        log::debug!("No body found for inscription: {}, filling with empty body", inscription_id);	
-        Vec::new()	
-      }	
-    };	
-    let content_type = match Inscription::content_type(&inscription) {	
-      Some(content_type) => content_type,	
-      None => {	
-        log::debug!("No content type found for inscription: {}, filling with empty content type", inscription_id);	
-        ""	
-      }	
+
+    let body = Inscription::body(&inscription);
+    let bytes = match body {
+      Some(body) => body.to_vec(),
+      None => {
+        log::debug!(
+          "No body found for inscription: {}, filling with empty body",
+          inscription_id
+        );
+        Vec::new()
+      }
     };
-    let put_status = client	
-      .put_object()	
-      .bucket(bucket_name)	
-      .key(key)	
-      .body(ByteStream::from(bytes))	
-      .content_type(content_type)	
-      .send()	
+    let content_type = match Inscription::content_type(&inscription) {
+      Some(content_type) => content_type,
+      None => {
+        log::debug!(
+          "No content type found for inscription: {}, filling with empty content type",
+          inscription_id
+        );
+        ""
+      }
+    };
+    let put_status = client
+      .put_object()
+      .bucket(bucket_name)
+      .key(key)
+      .body(ByteStream::from(bytes))
+      .content_type(content_type)
+      .send()
       .await;
 
-    let _ret = match put_status {	
-      Ok(put_status) => {	
-        log::debug!("Uploaded ordinal content to S3: {}", id.clone());	
-        put_status	
-      }	
-      Err(error) => {	
-        log::error!("Error uploading ordinal {} to S3: {} - {:?}", id.clone(), error, error.message());	
-        return;	
-      }	
+    let _ret = match put_status {
+      Ok(put_status) => {
+        log::debug!("Uploaded ordinal content to S3: {}", id.clone());
+        put_status
+      }
+      Err(error) => {
+        log::error!(
+          "Error uploading ordinal {} to S3: {} - {:?}",
+          id.clone(),
+          error,
+          error.message()
+        );
+        return;
+      }
     };
   }
 
@@ -923,12 +1008,12 @@ impl Vermilion {
     let re = regex::Regex::new(pattern).unwrap();
     re.is_match(input)
   }
-  
+
   fn is_recursive(input: &str) -> bool {
     input.contains("/content")
   }
 
-  fn is_maybe_json(input: &str, content_type: Option<String>) -> bool { 
+  fn is_maybe_json(input: &str, content_type: Option<String>) -> bool {
     let length = input.len();
     if length < 2 {
       return false; // The string is too short
@@ -942,43 +1027,52 @@ impl Vermilion {
     let num_colons = input.chars().filter(|&c| c == ':').count();
     let num_quotes = input.chars().filter(|&c| c == '"').count();
     let num_commas = input.chars().filter(|&c| c == ',').count();
-    let ratio = (num_colons as f32 + num_quotes as f32 + num_commas as f32)/ length as f32;
+    let ratio = (num_colons as f32 + num_quotes as f32 + num_commas as f32) / length as f32;
     let first_char = input.chars().next().unwrap();
-    let last_char = input.chars().last().unwrap();  
+    let last_char = input.chars().last().unwrap();
     first_char == '{' || last_char == '}' || ratio > 0.1
   }
 
   fn cbor_into_string(cbor: CborValue) -> Option<String> {
     match cbor {
-        CborValue::Text(string) => Some(string),
-        _ => None,
+      CborValue::Text(string) => Some(string),
+      _ => None,
     }
   }
 
   fn cbor_to_json(cbor: CborValue) -> JsonValue {
     match cbor {
-        CborValue::Null => JsonValue::Null,
-        CborValue::Bool(boolean) => JsonValue::Bool(boolean),
-        CborValue::Text(string) => JsonValue::String(string),
-        CborValue::Integer(int) => JsonValue::Number({
-            let int: i128 = int.into();
-            if let Ok(int) = u64::try_from(int) {
-                JsonNumber::from(int)
-            } else if let Ok(int) = i64::try_from(int) {
-                JsonNumber::from(int)
-            } else {
-                JsonNumber::from_f64(int as f64).unwrap()
-            }
-        }),
-        CborValue::Float(float) => JsonValue::Number(JsonNumber::from_f64(float).unwrap()),
-        CborValue::Array(vec) => JsonValue::Array(vec.into_iter().map(Self::cbor_to_json).collect()),
-        CborValue::Map(map) => JsonValue::Object(map.into_iter().map(|(k, v)| (Self::cbor_into_string(k).unwrap(), Self::cbor_to_json(v))).collect()),
-        CborValue::Bytes(_) | CborValue::Tag(_, _) => unimplemented!(),
-        _ => unimplemented!(),
+      CborValue::Null => JsonValue::Null,
+      CborValue::Bool(boolean) => JsonValue::Bool(boolean),
+      CborValue::Text(string) => JsonValue::String(string),
+      CborValue::Integer(int) => JsonValue::Number({
+        let int: i128 = int.into();
+        if let Ok(int) = u64::try_from(int) {
+          JsonNumber::from(int)
+        } else if let Ok(int) = i64::try_from(int) {
+          JsonNumber::from(int)
+        } else {
+          JsonNumber::from_f64(int as f64).unwrap()
+        }
+      }),
+      CborValue::Float(float) => JsonValue::Number(JsonNumber::from_f64(float).unwrap()),
+      CborValue::Array(vec) => JsonValue::Array(vec.into_iter().map(Self::cbor_to_json).collect()),
+      CborValue::Map(map) => JsonValue::Object(
+        map
+          .into_iter()
+          .map(|(k, v)| (Self::cbor_into_string(k).unwrap(), Self::cbor_to_json(v)))
+          .collect(),
+      ),
+      CborValue::Bytes(_) | CborValue::Tag(_, _) => unimplemented!(),
+      _ => unimplemented!(),
     }
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
+  pub(crate) fn extract_ordinal_metadata(
+    index: Arc<Index>,
+    inscription_id: InscriptionId,
+    inscription: Inscription,
+  ) -> Result<(Metadata, Option<SatMetadata>)> {
     let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -988,74 +1082,77 @@ impl Vermilion {
     let content_length = match inscription.content_length() {
       Some(content_length) => Some(content_length as i64),
       None => {
-        log::debug!("No content length found for inscription: {}, filling with 0", inscription_id);
+        log::debug!(
+          "No content length found for inscription: {}, filling with 0",
+          inscription_id
+        );
         Some(0)
       }
     };
     let sat = match entry.sat {
       Some(sat) => Some(sat.n() as i64),
-      None => {
-        None
-      }
+      None => None,
     };
     let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
-    let mut metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
+    let mut metaprotocol = inscription
+      .metaprotocol()
+      .map_or(None, |str| Some(str.to_string()));
     if let Some(mut metaprotocol_inner) = metaprotocol.clone() {
       if metaprotocol_inner.len() > 100 {
-        log::warn!("Metaprotocol too long: {} - {}, truncating", inscription_id, metaprotocol_inner);
+        log::warn!(
+          "Metaprotocol too long: {} - {}, truncating",
+          inscription_id,
+          metaprotocol_inner
+        );
         //metaprotocol_inner.truncate(100);
         //metaprotocol = Some(metaprotocol_inner);
       }
     }
-    let embedded_metadata = inscription.metadata().map_or(None, |cbor| Some(Self::cbor_to_json(cbor).to_string()));
+    let embedded_metadata = inscription
+      .metadata()
+      .map_or(None, |cbor| Some(Self::cbor_to_json(cbor).to_string()));
     let sha256 = match inscription.body() {
       Some(body) => {
         let hash = digest(body);
         Some(hash)
-      },
-      None => {
-        None
       }
+      None => None,
     };
     let text = match inscription.body() {
       Some(body) => {
         let text = String::from_utf8(body.to_vec());
         match text {
           Ok(text) => Some(text),
-          Err(_) => None
+          Err(_) => None,
         }
-      },
-      None => {
-        None
       }
+      None => None,
     };
     let is_json = match inscription.body() {
       Some(body) => {
         let json = serde_json::from_slice::<serde::de::IgnoredAny>(body);
         match json {
           Ok(_) => true,
-          Err(_) => false
+          Err(_) => false,
         }
-      },
-      None => {
-        false
       }
+      None => false,
     };
     let is_maybe_json = match text.clone() {
       Some(text) => Self::is_maybe_json(&text, inscription.content_type().map(str::to_string)),
-      None => false
+      None => false,
     };
     let is_bitmap_style = match text.clone() {
       Some(text) => Self::is_bitmap_style(&text),
-      None => false
+      None => false,
     };
     let is_recursive = match text.clone() {
       Some(text) => Self::is_recursive(&text),
-      None => false
+      None => false,
     };
     let metadata = Metadata {
       id: inscription_id.to_string(),
-      content_length: content_length,
+      content_length,
       content_type: inscription.content_type().map(str::to_string),
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
@@ -1063,17 +1160,17 @@ impl Vermilion {
       pointer: inscription.pointer(),
       number: entry.inscription_number,
       sequence_number: Some(entry.sequence_number),
-      parent: parent,
-      metaprotocol: metaprotocol,
-      embedded_metadata: embedded_metadata,
-      sat: sat,
+      parent,
+      metaprotocol,
+      embedded_metadata,
+      sat,
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
-      text: text,
-      is_json: is_json,
+      text,
+      is_json,
       is_maybe_json: Some(is_maybe_json),
       is_bitmap_style: Some(is_bitmap_style),
-      is_recursive: Some(is_recursive)
+      is_recursive: Some(is_recursive),
     };
     let t2 = Instant::now();
     let sat_metadata = match entry.sat {
@@ -1091,22 +1188,31 @@ impl Vermilion {
           offset: sat.third(),
           rarity: sat.rarity().to_string(),
           percentile: sat.percentile(),
-          timestamp: sat_blocktime.timestamp().timestamp()
+          timestamp: sat_blocktime.timestamp().timestamp(),
         };
         Some(sat_metadata)
-      },
-      None => None
+      }
+      None => None,
     };
     let t3 = Instant::now();
 
-    log::trace!("index: {:?} metadata: {:?} sat: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t3.duration_since(t0));
+    log::trace!(
+      "index: {:?} metadata: {:?} sat: {:?} total: {:?}",
+      t1.duration_since(t0),
+      t2.duration_since(t1),
+      t3.duration_since(t2),
+      t3.duration_since(t0)
+    );
     Ok((metadata, sat_metadata))
   }
 
-  pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_metadata_table(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS ordinals (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS ordinals (
           id varchar(80) not null primary key,
           content_length bigint,
           content_type text,
@@ -1134,14 +1240,20 @@ impl Vermilion {
           INDEX index_sha256 (sha256),
           INDEX index_sat (sat),
           INDEX index_parent (parent)
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
 
-  pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_sat_table(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS sat (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS sat (
         sat bigint not null primary key,
         sat_decimal text,
         degree text,
@@ -1157,20 +1269,29 @@ impl Vermilion {
         INDEX index_sat (sat),
         INDEX index_block (block),
         INDEX index_rarity (rarity)
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
 
-  pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_content_table(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS content (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS content (
         content_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
         sha256 varchar(64) NOT NULL PRIMARY KEY,
         content mediumblob,
         content_type text,
         INDEX index_sha256 (sha256)
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
 
@@ -1187,33 +1308,34 @@ impl Vermilion {
   {
     let mut stmt = format!("INSERT IGNORE INTO {} ({}) VALUES ", table, cols.join(","));
     let row = format!(
-        "({}),",
-        cols.iter()
-            .map(|_| "?".to_string())
-            .collect::<Vec<_>>()
-            .join(",")
+      "({}),",
+      cols
+        .iter()
+        .map(|_| "?".to_string())
+        .collect::<Vec<_>>()
+        .join(",")
     );
     stmt.reserve(objects.len() * (cols.len() * 2 + 2));
     for _ in 0..objects.len() {
-        stmt.push_str(&row);
+      stmt.push_str(&row);
     }
-  
+
     // remove the trailing comma
     stmt.pop();
-  
+
     let mut params = Vec::new();
-  
+
     let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
     for o in objects.iter() {
-        let named_params: mysql_async::Params = fun(o).into();
-        let positional_params = named_params.into_positional(bytes.as_slice())?;
-        if let mysql_async::Params::Positional(new_params) = positional_params {
-            for param in new_params {
-                params.push(param);
-            }
+      let named_params: mysql_async::Params = fun(o).into();
+      let positional_params = named_params.into_positional(bytes.as_slice())?;
+      if let mysql_async::Params::Positional(new_params) = positional_params {
+        for param in new_params {
+          params.push(param);
         }
+      }
     }
-  
+
     let mut conn = pool.get_conn().await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let result = tx.exec_drop(stmt, params).await;
@@ -1235,115 +1357,125 @@ impl Vermilion {
   {
     let mut stmt = format!("INSERT INTO {} ({}) VALUES ", table, cols.join(","));
     let row = format!(
-        "({}),",
-        cols.iter()
-            .map(|_| "?".to_string())
-            .collect::<Vec<_>>()
-            .join(",")
+      "({}),",
+      cols
+        .iter()
+        .map(|_| "?".to_string())
+        .collect::<Vec<_>>()
+        .join(",")
     );
     stmt.reserve(objects.len() * (cols.len() * 2 + 2));
     for _ in 0..objects.len() {
-        stmt.push_str(&row);
+      stmt.push_str(&row);
     }
-  
+
     // remove the trailing comma
     stmt.pop();
-  
+
     // ON DUPLICATE KEY UPDATE
     let formatted_string = update_cols
       .iter()
-      .map(|field| {
-        format!("{}=VALUES({})", field, field)
-      })
+      .map(|field| format!("{}=VALUES({})", field, field))
       .collect::<Vec<_>>()
       .join(",");
     let duplicate_key_stmt = format!(" ON DUPLICATE KEY UPDATE {}", formatted_string);
     stmt.push_str(&duplicate_key_stmt);
-  
+
     let mut params = Vec::new();
-  
+
     let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
     for o in objects.iter() {
-        let named_params: mysql_async::Params = fun(o).into();
-        let positional_params = named_params.into_positional(bytes.as_slice())?;
-        if let mysql_async::Params::Positional(new_params) = positional_params {
-            for param in new_params {
-                params.push(param);
-            }
+      let named_params: mysql_async::Params = fun(o).into();
+      let positional_params = named_params.into_positional(bytes.as_slice())?;
+      if let mysql_async::Params::Positional(new_params) = positional_params {
+        for param in new_params {
+          params.push(param);
         }
+      }
     }
     let mut conn = pool.get_conn().await?;
     let result = conn.exec_drop(stmt, params).await;
     result
   }
 
-  pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_metadata(
+    pool: mysql_async::Pool,
+    metadata_vec: Vec<Metadata>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let insert_query = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
     VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)";
     let insert_query_update = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
     VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
-    ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-    pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
+    ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction),
+    pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata),
     sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)";
-    let mut _exec = tx.exec_batch(
-      insert_query,
-      metadata_vec.iter().map(|metadata| params! { 
-        "id" => &metadata.id,
-        "content_length" => &metadata.content_length,
-        "content_type" => &metadata.content_type,
-        "genesis_fee" => &metadata.genesis_fee,
-        "genesis_height" => &metadata.genesis_height,
-        "genesis_transaction" => &metadata.genesis_transaction,
-        "pointer" => &metadata.pointer,
-        "number" => &metadata.number,
-        "sequence_number" => &metadata.sequence_number,
-        "parent" => &metadata.parent,
-        "metaprotocol" => &metadata.metaprotocol,
-        "embedded_metadata" => &metadata.embedded_metadata,
-        "sat" => &metadata.sat,
-        "timestamp" => &metadata.timestamp,
-        "sha256" => &metadata.sha256,
-        "text" => &metadata.text,
-        "is_json" => &metadata.is_json,
-        "is_maybe_json" => &metadata.is_maybe_json,
-        "is_bitmap_style" => &metadata.is_bitmap_style,
-        "is_recursive" => &metadata.is_recursive
-      })
-    ).await;
+    let mut _exec = tx
+      .exec_batch(
+        insert_query,
+        metadata_vec.iter().map(|metadata| {
+          params! {
+            "id" => &metadata.id,
+            "content_length" => &metadata.content_length,
+            "content_type" => &metadata.content_type,
+            "genesis_fee" => &metadata.genesis_fee,
+            "genesis_height" => &metadata.genesis_height,
+            "genesis_transaction" => &metadata.genesis_transaction,
+            "pointer" => &metadata.pointer,
+            "number" => &metadata.number,
+            "sequence_number" => &metadata.sequence_number,
+            "parent" => &metadata.parent,
+            "metaprotocol" => &metadata.metaprotocol,
+            "embedded_metadata" => &metadata.embedded_metadata,
+            "sat" => &metadata.sat,
+            "timestamp" => &metadata.timestamp,
+            "sha256" => &metadata.sha256,
+            "text" => &metadata.text,
+            "is_json" => &metadata.is_json,
+            "is_maybe_json" => &metadata.is_maybe_json,
+            "is_bitmap_style" => &metadata.is_bitmap_style,
+            "is_recursive" => &metadata.is_recursive
+          }
+        }),
+      )
+      .await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         if error.to_string().contains("Duplicate entry") {
           log::info!("Duplicates found, updating metadata");
-          let mut _exec = tx.exec_batch(
-            insert_query_update,
-            metadata_vec.iter().map(|metadata| params! { 
-              "id" => &metadata.id,
-              "content_length" => &metadata.content_length,
-              "content_type" => &metadata.content_type,
-              "genesis_fee" => &metadata.genesis_fee,
-              "genesis_height" => &metadata.genesis_height,
-              "genesis_transaction" => &metadata.genesis_transaction,
-              "pointer" => &metadata.pointer,
-              "number" => &metadata.number,
-              "sequence_number" => &metadata.sequence_number,
-              "parent" => &metadata.parent,
-              "metaprotocol" => &metadata.metaprotocol,
-              "embedded_metadata" => &metadata.embedded_metadata,
-              "sat" => &metadata.sat,
-              "timestamp" => &metadata.timestamp,
-              "sha256" => &metadata.sha256,
-              "text" => &metadata.text,
-              "is_json" => &metadata.is_json,
-              "is_maybe_json" => &metadata.is_maybe_json,
-              "is_bitmap_style" => &metadata.is_bitmap_style,
-              "is_recursive" => &metadata.is_recursive
-            })
-          ).await;
-        } else {          
-          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
+          let mut _exec = tx
+            .exec_batch(
+              insert_query_update,
+              metadata_vec.iter().map(|metadata| {
+                params! {
+                  "id" => &metadata.id,
+                  "content_length" => &metadata.content_length,
+                  "content_type" => &metadata.content_type,
+                  "genesis_fee" => &metadata.genesis_fee,
+                  "genesis_height" => &metadata.genesis_height,
+                  "genesis_transaction" => &metadata.genesis_transaction,
+                  "pointer" => &metadata.pointer,
+                  "number" => &metadata.number,
+                  "sequence_number" => &metadata.sequence_number,
+                  "parent" => &metadata.parent,
+                  "metaprotocol" => &metadata.metaprotocol,
+                  "embedded_metadata" => &metadata.embedded_metadata,
+                  "sat" => &metadata.sat,
+                  "timestamp" => &metadata.timestamp,
+                  "sha256" => &metadata.sha256,
+                  "text" => &metadata.text,
+                  "is_json" => &metadata.is_json,
+                  "is_maybe_json" => &metadata.is_maybe_json,
+                  "is_bitmap_style" => &metadata.is_bitmap_style,
+                  "is_recursive" => &metadata.is_recursive
+                }
+              }),
+            )
+            .await;
+        } else {
+          log::warn!("Error bulk inserting ordinal metadata: {}", error);
           return Err(Box::new(error));
         }
       }
@@ -1358,10 +1490,14 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_metadata2(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_metadata2(
+    pool: mysql_async::Pool,
+    metadata_vec: Vec<Metadata>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
     let tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let mut _exec = Self::bulk_insert(pool.clone(),
+    let mut _exec = Self::bulk_insert(
+      pool.clone(),
       "ordinals".to_string(),
       vec![
         "id".to_string(),
@@ -1383,38 +1519,42 @@ impl Vermilion {
         "is_json".to_string(),
         "is_maybe_json".to_string(),
         "is_bitmap_style".to_string(),
-        "is_recursive".to_string()
+        "is_recursive".to_string(),
       ],
       metadata_vec.clone(),
-      |metadata| params! { 
-        "id" => &metadata.id,
-        "content_length" => &metadata.content_length,
-        "content_type" => &metadata.content_type,
-        "genesis_fee" => &metadata.genesis_fee,
-        "genesis_height" => &metadata.genesis_height,
-        "genesis_transaction" => &metadata.genesis_transaction,
-        "pointer" => &metadata.pointer,
-        "number" => &metadata.number,
-        "sequence_number" => &metadata.sequence_number,
-        "parent" => &metadata.parent,
-        "metaprotocol" => &metadata.metaprotocol,
-        "embedded_metadata" => &metadata.embedded_metadata,
-        "sat" => &metadata.sat,
-        "timestamp" => &metadata.timestamp,
-        "sha256" => &metadata.sha256,
-        "text" => &metadata.text,
-        "is_json" => &metadata.is_json,
-        "is_maybe_json" => &metadata.is_maybe_json,
-        "is_bitmap_style" => &metadata.is_bitmap_style,
-        "is_recursive" => &metadata.is_recursive
-      }
-    ).await;
+      |metadata| {
+        params! {
+          "id" => &metadata.id,
+          "content_length" => &metadata.content_length,
+          "content_type" => &metadata.content_type,
+          "genesis_fee" => &metadata.genesis_fee,
+          "genesis_height" => &metadata.genesis_height,
+          "genesis_transaction" => &metadata.genesis_transaction,
+          "pointer" => &metadata.pointer,
+          "number" => &metadata.number,
+          "sequence_number" => &metadata.sequence_number,
+          "parent" => &metadata.parent,
+          "metaprotocol" => &metadata.metaprotocol,
+          "embedded_metadata" => &metadata.embedded_metadata,
+          "sat" => &metadata.sat,
+          "timestamp" => &metadata.timestamp,
+          "sha256" => &metadata.sha256,
+          "text" => &metadata.text,
+          "is_json" => &metadata.is_json,
+          "is_maybe_json" => &metadata.is_maybe_json,
+          "is_bitmap_style" => &metadata.is_bitmap_style,
+          "is_recursive" => &metadata.is_recursive
+        }
+      },
+    )
+    .await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         if error.to_string().contains("Duplicate entry") {
           log::info!("Duplicates found, updating metadata");
-          let mut _exec = Self::bulk_insert_update(pool.clone(),
+          let mut _exec = Self::bulk_insert_update(
+            pool.clone(),
             "ordinals".to_string(),
             vec![
               "id".to_string(),
@@ -1436,7 +1576,7 @@ impl Vermilion {
               "is_json".to_string(),
               "is_maybe_json".to_string(),
               "is_bitmap_style".to_string(),
-              "is_recursive".to_string()
+              "is_recursive".to_string(),
             ],
             vec![
               "content_length".to_string(),
@@ -1457,34 +1597,37 @@ impl Vermilion {
               "is_json".to_string(),
               "is_maybe_json".to_string(),
               "is_bitmap_style".to_string(),
-              "is_recursive".to_string()
+              "is_recursive".to_string(),
             ],
             metadata_vec,
-            |metadata| params! { 
-              "id" => &metadata.id,
-              "content_length" => &metadata.content_length,
-              "content_type" => &metadata.content_type,
-              "genesis_fee" => &metadata.genesis_fee,
-              "genesis_height" => &metadata.genesis_height,
-              "genesis_transaction" => &metadata.genesis_transaction,
-              "pointer" => &metadata.pointer,
-              "number" => &metadata.number,
-              "sequence_number" => &metadata.sequence_number,
-              "parent" => &metadata.parent,
-              "metaprotocol" => &metadata.metaprotocol,
-              "embedded_metadata" => &metadata.embedded_metadata,
-              "sat" => &metadata.sat,
-              "timestamp" => &metadata.timestamp,
-              "sha256" => &metadata.sha256,
-              "text" => &metadata.text,
-              "is_json" => &metadata.is_json,
-              "is_maybe_json" => &metadata.is_maybe_json,
-              "is_bitmap_style" => &metadata.is_bitmap_style,
-              "is_recursive" => &metadata.is_recursive
-            }
-          ).await;
-        } else {          
-          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
+            |metadata| {
+              params! {
+                "id" => &metadata.id,
+                "content_length" => &metadata.content_length,
+                "content_type" => &metadata.content_type,
+                "genesis_fee" => &metadata.genesis_fee,
+                "genesis_height" => &metadata.genesis_height,
+                "genesis_transaction" => &metadata.genesis_transaction,
+                "pointer" => &metadata.pointer,
+                "number" => &metadata.number,
+                "sequence_number" => &metadata.sequence_number,
+                "parent" => &metadata.parent,
+                "metaprotocol" => &metadata.metaprotocol,
+                "embedded_metadata" => &metadata.embedded_metadata,
+                "sat" => &metadata.sat,
+                "timestamp" => &metadata.timestamp,
+                "sha256" => &metadata.sha256,
+                "text" => &metadata.text,
+                "is_json" => &metadata.is_json,
+                "is_maybe_json" => &metadata.is_maybe_json,
+                "is_bitmap_style" => &metadata.is_bitmap_style,
+                "is_recursive" => &metadata.is_recursive
+              }
+            },
+          )
+          .await;
+        } else {
+          log::warn!("Error bulk inserting ordinal metadata: {}", error);
           return Err(Box::new(error));
         }
       }
@@ -1499,14 +1642,16 @@ impl Vermilion {
     }
   }
 
-
-  pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_sat_metadata(
+    pool: mysql_async::Pool,
+    metadata_vec: Vec<SatMetadata>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
         VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :timestamp)
-        ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch), 
+        ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch),
         period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), timestamp=VALUES(timestamp)",
         metadata_vec.iter().map(|metadata| params! {
           "sat" => &metadata.sat,
@@ -1524,7 +1669,7 @@ impl Vermilion {
       })
     ).await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         log::warn!("Error bulk inserting sat metadata: {}", error);
         return Err(Box::new(error));
@@ -1540,7 +1685,10 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_content(
+    pool: mysql_async::Pool,
+    content_vec: Vec<ContentBlob>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
@@ -1552,7 +1700,7 @@ impl Vermilion {
       })
     ).await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         log::debug!("Error bulk inserting content: {}", error);
         return Err(Box::new(error));
@@ -1568,7 +1716,9 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_last_number(
+    pool: mysql_async::Pool,
+  ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1 and sequence_number!=0")
       .await
@@ -1582,9 +1732,10 @@ impl Vermilion {
       Some(row) => {
         let number: u64 = row;
         number
-      },
+      }
       None => {
-        let row = conn.query_iter("select max(sequence_number) from ordinals")
+        let row = conn
+          .query_iter("select max(sequence_number) from ordinals")
           .await
           .unwrap()
           .next()
@@ -1596,10 +1747,8 @@ impl Vermilion {
           Some(max) => {
             let number: u64 = max;
             number
-          },
-          None => {
-            0
           }
+          None => 0,
         }
       }
     };
@@ -1607,16 +1756,22 @@ impl Vermilion {
     Ok(number)
   }
 
-  pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
+  pub(crate) async fn get_needed_sequence_numbers(
+    status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>,
+  ) -> Vec<u64> {
     let mut status_vector = status_vector.lock().await;
-    let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.sequence_number).unwrap().sequence_number;
+    let largest_number_in_vec = status_vector
+      .iter()
+      .max_by_key(|status| status.sequence_number)
+      .unwrap()
+      .sequence_number;
     let mut needed_inscription_numbers: Vec<u64> = Vec::new();
     //Find start of needed numbers
-    let mut pending_count=0;
-    let mut unknown_count=0;
-    let mut error_count=0;
-    let mut not_found_count=0;
-    let mut success_count=0;
+    let mut pending_count = 0;
+    let mut unknown_count = 0;
+    let mut error_count = 0;
+    let mut not_found_count = 0;
+    let mut success_count = 0;
     for status in status_vector.iter() {
       if status.status == "UNKNOWN" || status.status == "ERROR" || status.status == "NOT_FOUND" {
         needed_inscription_numbers.push(status.sequence_number);
@@ -1627,7 +1782,7 @@ impl Vermilion {
       if status.status == "UNKNOWN" {
         unknown_count = unknown_count + 1;
       }
-      if status.status == "ERROR" || status.status == "ERROR_LOCKED"  {
+      if status.status == "ERROR" || status.status == "ERROR_LOCKED" {
         error_count = error_count + 1;
       }
       if status.status == "NOT_FOUND" || status.status == "NOT_FOUND_LOCKED" {
@@ -1637,13 +1792,20 @@ impl Vermilion {
         success_count = success_count + 1;
       }
     }
-    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
+    log::info!(
+      "Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}",
+      pending_count,
+      unknown_count,
+      error_count,
+      not_found_count,
+      success_count
+    );
     //Fill in needed numbers
     let mut needed_length = needed_inscription_numbers.len();
     needed_inscription_numbers.sort();
     if needed_length < INDEX_BATCH_SIZE {
       let mut i = 0;
-      while needed_length < INDEX_BATCH_SIZE {        
+      while needed_length < INDEX_BATCH_SIZE {
         i = i + 1;
         needed_inscription_numbers.push(largest_number_in_vec + i);
         needed_length = needed_inscription_numbers.len();
@@ -1653,12 +1815,15 @@ impl Vermilion {
     }
     //Mark as pending
     for number in needed_inscription_numbers.clone() {
-      match status_vector.iter_mut().find(|status| status.sequence_number == number) {
+      match status_vector
+        .iter_mut()
+        .find(|status| status.sequence_number == number)
+      {
         Some(status) => {
           status.status = "PENDING".to_string();
-        },
+        }
         None => {
-          let status = SequenceNumberStatus{
+          let status = SequenceNumberStatus {
             sequence_number: number,
             status: "PENDING".to_string(),
           };
@@ -1671,9 +1836,12 @@ impl Vermilion {
     needed_inscription_numbers
   }
 
-  pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>, n_threads: u32) {
+  pub(crate) async fn print_index_timings(
+    timings: Arc<Mutex<Vec<IndexerTimings>>>,
+    n_threads: u32,
+  ) {
     let mut locked_timings = timings.lock().await;
-    // sort & remove incomplete entries    
+    // sort & remove incomplete entries
     locked_timings.retain(|e| e.inscription_start + INDEX_BATCH_SIZE as u64 == e.inscription_end);
     locked_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
     if locked_timings.len() < 1 {
@@ -1691,35 +1859,50 @@ impl Vermilion {
       } else {
         relevant_timings = Vec::new();
         relevant_timings.push(timing.clone());
-      }      
+      }
       last = timing.inscription_start;
     }
     if relevant_timings.len() < n_threads as usize {
       return;
-    }    
-    relevant_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));    
-    let mut queueing_total = Duration::new(0,0);
-    let mut acquire_permit_total = Duration::new(0,0);
-    let mut get_numbers_total = Duration::new(0,0);
-    let mut get_id_total = Duration::new(0,0);
-    let mut get_inscription_total = Duration::new(0,0);
-    let mut upload_content_total = Duration::new(0,0);
-    let mut get_metadata_total = Duration::new(0,0);
-    let mut retrieval_total = Duration::new(0,0);
-    let mut insertion_total = Duration::new(0,0);
-    let mut metadata_insertion_total = Duration::new(0,0);
-    let mut sat_insertion_total = Duration::new(0,0);
-    let mut content_insertion_total = Duration::new(0,0);
-    let mut locking_total = Duration::new(0,0);
+    }
+    relevant_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
+    let mut queueing_total = Duration::new(0, 0);
+    let mut acquire_permit_total = Duration::new(0, 0);
+    let mut get_numbers_total = Duration::new(0, 0);
+    let mut get_id_total = Duration::new(0, 0);
+    let mut get_inscription_total = Duration::new(0, 0);
+    let mut upload_content_total = Duration::new(0, 0);
+    let mut get_metadata_total = Duration::new(0, 0);
+    let mut retrieval_total = Duration::new(0, 0);
+    let mut insertion_total = Duration::new(0, 0);
+    let mut metadata_insertion_total = Duration::new(0, 0);
+    let mut sat_insertion_total = Duration::new(0, 0);
+    let mut content_insertion_total = Duration::new(0, 0);
+    let mut locking_total = Duration::new(0, 0);
     let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
     for timing in relevant_timings.iter() {
       queueing_total = queueing_total + timing.acquire_permit_start.duration_since(last_start);
-      acquire_permit_total = acquire_permit_total + timing.acquire_permit_end.duration_since(timing.acquire_permit_start);
-      get_numbers_total = get_numbers_total + timing.get_numbers_end.duration_since(timing.get_numbers_start);
+      acquire_permit_total = acquire_permit_total
+        + timing
+          .acquire_permit_end
+          .duration_since(timing.acquire_permit_start);
+      get_numbers_total = get_numbers_total
+        + timing
+          .get_numbers_end
+          .duration_since(timing.get_numbers_start);
       get_id_total = get_id_total + timing.get_id_end.duration_since(timing.get_id_start);
-      get_inscription_total = get_inscription_total + timing.get_inscription_end.duration_since(timing.get_inscription_start);
-      upload_content_total = upload_content_total + timing.upload_content_end.duration_since(timing.upload_content_start);
-      get_metadata_total = get_metadata_total + timing.get_metadata_end.duration_since(timing.get_metadata_start);
+      get_inscription_total = get_inscription_total
+        + timing
+          .get_inscription_end
+          .duration_since(timing.get_inscription_start);
+      upload_content_total = upload_content_total
+        + timing
+          .upload_content_end
+          .duration_since(timing.upload_content_start);
+      get_metadata_total = get_metadata_total
+        + timing
+          .get_metadata_end
+          .duration_since(timing.get_metadata_start);
       retrieval_total = retrieval_total + timing.retrieval;
       insertion_total = insertion_total + timing.insertion;
       metadata_insertion_total = metadata_insertion_total + timing.metadata_insertion;
@@ -1728,35 +1911,87 @@ impl Vermilion {
       locking_total = locking_total + timing.locking;
       last_start = timing.acquire_permit_start;
     }
-    let count = relevant_timings.last().unwrap().inscription_end - relevant_timings.first().unwrap().inscription_start+1;
-    let total_time = relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start);
-    log::info!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
-    log::info!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
-    log::info!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
-    log::info!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
-    log::info!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
-    log::info!("Get id time avg per thread: {:?}", get_id_total/n_threads);
-    log::info!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
-    log::info!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
-    log::info!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
-    log::info!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
-    log::info!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
-    log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total/n_threads);
-    log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total/n_threads);
-    log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total/n_threads);
-    log::info!("--Locking time avg per thread: {:?}", locking_total/n_threads);
+    let count = relevant_timings.last().unwrap().inscription_end
+      - relevant_timings.first().unwrap().inscription_start
+      + 1;
+    let total_time = relevant_timings
+      .last()
+      .unwrap()
+      .get_metadata_end
+      .duration_since(relevant_timings.first().unwrap().get_numbers_start);
+    log::info!(
+      "Inscriptions {}-{}",
+      relevant_timings.first().unwrap().inscription_start,
+      relevant_timings.last().unwrap().inscription_end
+    );
+    log::info!(
+      "Total time: {:?}, avg per inscription: {:?}",
+      total_time,
+      total_time / count as u32
+    );
+    log::info!(
+      "Queueing time avg per thread: {:?}",
+      queueing_total / n_threads
+    ); //9 because the first one doesn't have a recorded queueing time
+    log::info!(
+      "Acquiring Permit time avg per thread: {:?}",
+      acquire_permit_total / n_threads
+    ); //should be similar to queueing time
+    log::info!(
+      "Get numbers time avg per thread: {:?}",
+      get_numbers_total / n_threads
+    );
+    log::info!("Get id time avg per thread: {:?}", get_id_total / n_threads);
+    log::info!(
+      "Get inscription time avg per thread: {:?}",
+      get_inscription_total / n_threads
+    );
+    log::info!(
+      "Upload content time avg per thread: {:?}",
+      upload_content_total / n_threads
+    );
+    log::info!(
+      "Get metadata time avg per thread: {:?}",
+      get_metadata_total / n_threads
+    );
+    log::info!(
+      "--Retrieval time avg per thread: {:?}",
+      retrieval_total / n_threads
+    );
+    log::info!(
+      "--Insertion time avg per thread: {:?}",
+      insertion_total / n_threads
+    );
+    log::info!(
+      "--Metadata Insertion time avg per thread: {:?}",
+      metadata_insertion_total / n_threads
+    );
+    log::info!(
+      "--Sat Insertion time avg per thread: {:?}",
+      sat_insertion_total / n_threads
+    );
+    log::info!(
+      "--Content Insertion time avg per thread: {:?}",
+      content_insertion_total / n_threads
+    );
+    log::info!(
+      "--Locking time avg per thread: {:?}",
+      locking_total / n_threads
+    );
 
     //Remove printed timings
     let to_remove = BTreeSet::from_iter(relevant_timings);
     locked_timings.retain(|e| !to_remove.contains(e));
-
   }
 
   //Address Indexer Helper functions
-  pub(crate) async fn create_transfers_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_transfers_table(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS transfers (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS transfers (
         id varchar(80) not null,
         block_number bigint not null,
         block_timestamp bigint,
@@ -1768,18 +2003,24 @@ impl Vermilion {
         PRIMARY KEY (`id`,`block_number`),
         INDEX index_id (id),
         INDEX index_block (block_number)
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_transfers(
+    pool: mysql_async::Pool,
+    transfer_vec: Vec<Transfer>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, offset,  address, is_genesis)
         VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
         ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
-        transfer_vec.iter().map(|transfer| params! { 
+        transfer_vec.iter().map(|transfer| params! {
           "id" => &transfer.id,
           "block_number" => &transfer.block_number,
           "block_timestamp" => &transfer.block_timestamp,
@@ -1791,7 +2032,7 @@ impl Vermilion {
       })
     ).await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         log::warn!("Error bulk inserting ordinal transfers: {}", error);
         return Err(Box::new(error));
@@ -1807,34 +2048,41 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_transfers2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_transfers2(
+    pool: mysql_async::Pool,
+    transfer_vec: Vec<Transfer>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for chunk in transfer_vec.chunks(5000) {
-      let insert_result = Self::bulk_insert(pool.clone(), 
-        "transfers".to_string(), 
+      let insert_result = Self::bulk_insert(
+        pool.clone(),
+        "transfers".to_string(),
         vec![
-          "id".to_string(), 
-          "block_number".to_string(), 
+          "id".to_string(),
+          "block_number".to_string(),
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
           "offset".to_string(),
           "address".to_string(),
-          "is_genesis".to_string()], 
-        chunk.to_vec(), 
+          "is_genesis".to_string(),
+        ],
+        chunk.to_vec(),
         |object| {
-        params! {
-            "id" => &object.id,
-            "block_number" => object.block_number, 
-            "block_timestamp" => object.block_timestamp,
-            "satpoint" => &object.satpoint,
-            "transaction" => &object.transaction,
-            "offset" => object.offset,
-            "address" => &object.address,
-            "is_genesis" => object.is_genesis
-        }
-      }).await;
+          params! {
+              "id" => &object.id,
+              "block_number" => object.block_number,
+              "block_timestamp" => object.block_timestamp,
+              "satpoint" => &object.satpoint,
+              "transaction" => &object.transaction,
+              "offset" => object.offset,
+              "address" => &object.address,
+              "is_genesis" => object.is_genesis
+          }
+        },
+      )
+      .await;
       match insert_result {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(error) => {
           log::warn!("Error bulk inserting transfers: {}", error);
           return Err(Box::new(error));
@@ -1844,11 +2092,13 @@ impl Vermilion {
     Ok(())
   }
 
-
-  pub(crate) async fn create_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_address_table(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS addresses (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS addresses (
         id varchar(80) not null primary key,
         block_number bigint not null,
         block_timestamp bigint,
@@ -1859,18 +2109,24 @@ impl Vermilion {
         is_genesis boolean,
         INDEX index_id (id),
         INDEX index_address (address)
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_addresses(
+    pool: mysql_async::Pool,
+    transfer_vec: Vec<Transfer>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let _exec = tx.exec_batch(
       r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, offset, address, is_genesis)
         VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
         ON DUPLICATE KEY UPDATE block_number=VALUES(block_number), block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
-        transfer_vec.iter().map(|transfer| params! { 
+        transfer_vec.iter().map(|transfer| params! {
           "id" => &transfer.id,
           "block_number" => &transfer.block_number,
           "block_timestamp" => &transfer.block_timestamp,
@@ -1882,7 +2138,7 @@ impl Vermilion {
       })
     ).await;
     match _exec {
-      Ok(_) => {},
+      Ok(_) => {}
       Err(error) => {
         log::warn!("Error bulk inserting ordinal addresses: {}", error);
         return Err(Box::new(error));
@@ -1898,41 +2154,49 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn bulk_insert_addresses2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_addresses2(
+    pool: mysql_async::Pool,
+    transfer_vec: Vec<Transfer>,
+  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for chunk in transfer_vec.chunks(5000) {
-      let insert_result = Self::bulk_insert_update(pool.clone(), 
-        "addresses".to_string(), 
+      let insert_result = Self::bulk_insert_update(
+        pool.clone(),
+        "addresses".to_string(),
         vec![
-          "id".to_string(), 
-          "block_number".to_string(), 
+          "id".to_string(),
+          "block_number".to_string(),
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
           "offset".to_string(),
           "address".to_string(),
-          "is_genesis".to_string()], 
+          "is_genesis".to_string(),
+        ],
         vec![
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
           "offset".to_string(),
           "address".to_string(),
-          "is_genesis".to_string()], 
-        chunk.to_vec(), 
+          "is_genesis".to_string(),
+        ],
+        chunk.to_vec(),
         |object| {
-        params! {
-            "id" => &object.id,
-            "block_number" => object.block_number, 
-            "block_timestamp" => object.block_timestamp,
-            "satpoint" => &object.satpoint,
-            "transaction" => &object.transaction,
-            "offset" => object.offset,
-            "address" => &object.address,
-            "is_genesis" => object.is_genesis
-        }
-      }).await;
+          params! {
+              "id" => &object.id,
+              "block_number" => object.block_number,
+              "block_timestamp" => object.block_timestamp,
+              "satpoint" => &object.satpoint,
+              "transaction" => &object.transaction,
+              "offset" => object.offset,
+              "address" => &object.address,
+              "is_genesis" => object.is_genesis
+          }
+        },
+      )
+      .await;
       match insert_result {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(error) => {
           log::warn!("Error bulk inserting addresses: {}", error);
           return Err(Box::new(error));
@@ -1942,9 +2206,12 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_start_block(
+    pool: mysql_async::Pool,
+  ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    let row = conn.query_iter("select max(block_number) from transfers")
+    let row = conn
+      .query_iter("select max(block_number) from transfers")
       .await
       .unwrap()
       .next()
@@ -1955,29 +2222,28 @@ impl Vermilion {
     let block_number = match row {
       Some(row) => {
         let block_number: u64 = row.try_into().unwrap();
-        block_number+1
-      },
-      None => {
-        0
+        block_number + 1
       }
+      None => 0,
     };
     Ok(block_number)
   }
   //Server api functions
-  async fn root() -> &'static str {    
-"One of the fastest ways to dox yourself as a cryptopleb is to ask \"what's the reason for the Bitcoin pump today.\"
+  async fn root() -> &'static str {
+    "One of the fastest ways to dox yourself as a cryptopleb is to ask \"what's the reason for the Bitcoin pump today.\"
 
 Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content(server_config.pool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+    let content_blob = Self::get_ordinal_content(
+      server_config.pool,
+      "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string(),
+    )
+    .await;
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
-    (
-        ([(axum::http::header::CONTENT_TYPE, content_type)]),
-        bytes,
-    )
+    (([(axum::http::header::CONTENT_TYPE, content_type)]), bytes)
   }
 
   async fn set_header<B>(response: Response<B>) -> Response<B> {
@@ -1985,66 +2251,114 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     response
   }
 
-  async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await;
+  async fn inscription(
+    Path(inscription_id): Path<InscriptionId>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let content_blob =
+      Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await;
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      ([
+        (axum::http::header::CONTENT_TYPE, content_type),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable".to_string(),
+        ),
+      ]),
       bytes,
     )
   }
 
-  async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content_by_number(server_config.pool,  number).await;
+  async fn inscription_number(
+    Path(number): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let content_blob = Self::get_ordinal_content_by_number(server_config.pool, number).await;
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      ([
+        (axum::http::header::CONTENT_TYPE, content_type),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable".to_string(),
+        ),
+      ]),
       bytes,
     )
   }
 
-  async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_sha256(
+    Path(sha256): Path<String>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let content_blob = Self::get_ordinal_content_by_sha256(server_config.pool, sha256, None).await;
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+      ([
+        (axum::http::header::CONTENT_TYPE, content_type),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable".to_string(),
+        ),
+      ]),
       bytes,
     )
   }
 
-  async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_metadata(
+    Path(inscription_id): Path<InscriptionId>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await;
     (
-      ([(axum::http::header::CONTENT_TYPE, "application/json"),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      ([
+        (axum::http::header::CONTENT_TYPE, "application/json"),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable",
+        ),
+      ]),
       Json(metadata),
     )
   }
 
-  async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_metadata_number(
+    Path(number): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number).await;
     (
-      ([(axum::http::header::CONTENT_TYPE, "application/json"),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      ([
+        (axum::http::header::CONTENT_TYPE, "application/json"),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable",
+        ),
+      ]),
       Json(metadata),
     )
   }
 
-  async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
+  async fn inscription_editions(
+    Path(inscription_id): Path<InscriptionId>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let editions =
+      Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(editions),
     )
   }
 
-  async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_editions_number(
+    Path(number): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2052,7 +2366,10 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_editions_sha256(
+    Path(sha256): Path<String>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2060,32 +2377,48 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscriptions_in_block(
+    Path(block): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
     (
-      ([(axum::http::header::CONTENT_TYPE, "application/json"),
-      (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      ([
+        (axum::http::header::CONTENT_TYPE, "application/json"),
+        (
+          axum::http::header::CACHE_CONTROL,
+          "public, max-age=31536000, immutable",
+        ),
+      ]),
       Json(inscriptions),
     )
   }
 
-  async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn random_inscription(
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let random_float = rng.gen::<f64>();
-    let (inscription_number, _band) = Self::get_random_inscription(server_config.pool, random_float).await;
+    let (inscription_number, _band) =
+      Self::get_random_inscription(server_config.pool, random_float).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
     )
   }
 
-  async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
+  async fn random_inscriptions(
+    n: Query<QueryNumber>,
+    State(server_config): State<ApiServerConfig>,
+    session: Session<SessionNullPool>,
+  ) -> impl axum::response::IntoResponse {
     let mut bands: Vec<(f64, f64)> = session.get("bands_seen").unwrap_or(Vec::new());
     for band in bands.iter() {
-        println!("Band: {:?}", band);
+      println!("Band: {:?}", band);
     }
     let n = n.0.n;
-    let (inscription_numbers, new_bands) = Self::get_random_inscriptions(server_config.pool, n, bands).await;
+    let (inscription_numbers, new_bands) =
+      Self::get_random_inscriptions(server_config.pool, n, bands).await;
     session.set("bands_seen", new_bands);
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2093,15 +2426,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfer = Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await;
+  async fn inscription_last_transfer(
+    Path(inscription_id): Path<InscriptionId>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let transfer =
+      Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfer),
     )
   }
 
-  async fn inscription_last_transfer_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_last_transfer_number(
+    Path(number): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let transfer = Self::get_last_ordinal_transfer_by_number(server_config.pool, number).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2109,15 +2449,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscription_transfers(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfers = Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await;
+  async fn inscription_transfers(
+    Path(inscription_id): Path<InscriptionId>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let transfers =
+      Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfers),
     )
   }
 
-  async fn inscription_transfers_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscription_transfers_number(
+    Path(number): Path<i64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let transfers = Self::get_ordinal_transfers_by_number(server_config.pool, number).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2125,15 +2472,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<TransferWithMetadata> = Self::get_inscriptions_by_address(server_config.pool, address).await;
+  async fn inscriptions_in_address(
+    Path(address): Path<String>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<TransferWithMetadata> =
+      Self::get_inscriptions_by_address(server_config.pool, address).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
     )
   }
 
-  async fn inscriptions_on_sat(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn inscriptions_on_sat(
+    Path(sat): Path<u64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let inscriptions: Vec<Metadata> = Self::get_inscriptions_on_sat(server_config.pool, sat).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2141,15 +2495,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
-  async fn inscriptions_in_sat_block(Path(block): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = Self::get_inscriptions_in_sat_block(server_config.pool, block).await;
+  async fn inscriptions_in_sat_block(
+    Path(block): Path<u64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<Metadata> =
+      Self::get_inscriptions_in_sat_block(server_config.pool, block).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
     )
   }
 
-  async fn sat_metadata(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn sat_metadata(
+    Path(sat): Path<u64>,
+    State(server_config): State<ApiServerConfig>,
+  ) -> impl axum::response::IntoResponse {
     let sat_metadata = Self::get_sat_metadata(server_config.pool, sat).await;
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -2159,12 +2520,16 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
-        .await
-        .expect("expect tokio signal ctrl-c");
+      .await
+      .expect("expect tokio signal ctrl-c");
   }
 
   //DB functions
-  async fn get_ordinal_content_s3(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
+  async fn get_ordinal_content_s3(
+    client: &s3::Client,
+    bucket_name: &str,
+    inscription_id: String,
+  ) -> GetObjectOutput {
     let key = format!("content/{}", inscription_id);
     let content = client
       .get_object()
@@ -2178,74 +2543,89 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> ContentBlob {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await.unwrap();    
-    let row: Option<Row> = conn.exec_first(
-      "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
-      params! {
-        "id" => inscription_id
-      }
-    )
-    .await
-    .unwrap();
+    let mut conn = Self::get_conn(pool).await.unwrap();
+    let row: Option<Row> = conn
+      .exec_first(
+        "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1",
+        params! {
+          "id" => inscription_id
+        },
+      )
+      .await
+      .unwrap();
     if row.is_none() {
       return ContentBlob {
         sha256: "".to_string(),
-        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+        content: "This content doesn't exist or hasn't been indexed yet."
+          .as_bytes()
+          .to_vec(),
         content_type: "text/plain".to_string(),
       };
     }
     let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
 
-    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
+    let content =
+      Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
   }
 
   async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> ContentBlob {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await.unwrap();    
-    let row: Option<Row> = conn.exec_first(
-      "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
-      params! {
-        "number" => number
-      }
-    )
-    .await
-    .unwrap();
+    let mut conn = Self::get_conn(pool).await.unwrap();
+    let row: Option<Row> = conn
+      .exec_first(
+        "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1",
+        params! {
+          "number" => number
+        },
+      )
+      .await
+      .unwrap();
     if row.is_none() {
       return ContentBlob {
         sha256: "".to_string(),
-        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+        content: "This content doesn't exist or hasn't been indexed yet."
+          .as_bytes()
+          .to_vec(),
         content_type: "text/plain".to_string(),
       };
     }
     let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
 
-    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
+    let content =
+      Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> ContentBlob {
+  async fn get_ordinal_content_by_sha256(
+    pool: mysql_async::Pool,
+    sha256: String,
+    content_type_override: Option<String>,
+  ) -> ContentBlob {
     let mut conn = Self::get_conn(pool).await.unwrap();
-    let moderation_flag: Option<String> = conn.exec_first(
-      r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
+    let moderation_flag: Option<String> = conn
+      .exec_first(
+        r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
               FROM content_moderation
               WHERE sha256=:sha256
               LIMIT 1",
-      params! {
-        "sha256" => sha256.clone()
-      }
-    ).await.unwrap();
+        params! {
+          "sha256" => sha256.clone()
+        },
+      )
+      .await
+      .unwrap();
 
     if let Some(flag) = moderation_flag {
-        if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
-            //Proceed as normal
-        } else {
-          return ContentBlob {
-              sha256: sha256.clone(),
-              content: std::fs::read("blocked.png").unwrap(),
-              content_type: "image/png".to_string(),
-          };
-        }
+      if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
+        //Proceed as normal
+      } else {
+        return ContentBlob {
+          sha256: sha256.clone(),
+          content: std::fs::read("blocked.png").unwrap(),
+          content_type: "image/png".to_string(),
+        };
+      }
     } else {
       return ContentBlob {
         sha256: sha256.clone(),
@@ -2266,11 +2646,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.get("sha256").unwrap(),
         content: row.take("content").unwrap(),
         content_type: row.take("content_type").unwrap(),
-      }
+      },
     );
     let mut result = result.await.unwrap().pop().unwrap();
     if let Some(content_type) = content_type_override {
-        result.content_type = content_type;
+      result.content_type = content_type;
     }
     result
   }
@@ -2278,14 +2658,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
+      "SELECT * FROM ordinals WHERE id=:id LIMIT 1",
       params! {
         "id" => inscription_id
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
+        content_type: row.take("content_type").unwrap(),
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
@@ -2302,8 +2682,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap(),
         is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.take("is_recursive").unwrap()
-      }
+        is_recursive: row.take("is_recursive").unwrap(),
+      },
     );
     let result = result.await.unwrap().pop().unwrap();
     result
@@ -2312,14 +2692,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> Metadata {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
+      "SELECT * FROM ordinals WHERE number=:number LIMIT 1",
       params! {
         "number" => number
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
+        content_type: row.take("content_type").unwrap(),
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
@@ -2336,14 +2716,17 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap(),
         is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+        is_recursive: row.get("is_recursive").unwrap(),
+      },
     );
     let result = result.await.unwrap().pop().unwrap();
-    result    
+    result
   }
 
-  async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
+  async fn get_matching_inscriptions(
+    pool: mysql_async::Pool,
+    inscription_id: String,
+  ) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
       "with a as (select sha256 from editions where id = :id) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100",
@@ -2360,10 +2743,13 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
+  async fn get_matching_inscriptions_by_number(
+    pool: mysql_async::Pool,
+    number: i64,
+  ) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where number = :number) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100", 
+      "with a as (select sha256 from editions where number = :number) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100",
       params! {
         "number" => number
       },
@@ -2377,7 +2763,10 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     editions
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
+  async fn get_matching_inscriptions_by_sha256(
+    pool: mysql_async::Pool,
+    sha256: String,
+  ) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
       "select id, number, edition, total from editions where sha256=:sha256 order by edition asc limit 100",
@@ -2396,38 +2785,44 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<Metadata> {
     let mut conn = Self::get_conn(pool).await.unwrap();
-    let inscriptions = conn.exec_map(
-      "SELECT * FROM ordinals WHERE genesis_height=:block", 
-      params! {
-        "block" => block
-      },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
-    ).await.unwrap();
+    let inscriptions = conn
+      .exec_map(
+        "SELECT * FROM ordinals WHERE genesis_height=:block",
+        params! {
+          "block" => block
+        },
+        |mut row: mysql_async::Row| Metadata {
+          id: row.get("id").unwrap(),
+          content_length: row.take("content_length").unwrap(),
+          content_type: row.take("content_type").unwrap(),
+          genesis_fee: row.get("genesis_fee").unwrap(),
+          genesis_height: row.get("genesis_height").unwrap(),
+          genesis_transaction: row.get("genesis_transaction").unwrap(),
+          pointer: row.take("pointer").unwrap(),
+          number: row.get("number").unwrap(),
+          sequence_number: row.get("sequence_number").unwrap(),
+          parent: row.take("parent").unwrap(),
+          metaprotocol: row.take("metaprotocol").unwrap(),
+          embedded_metadata: row.take("embedded_metadata").unwrap(),
+          sat: row.take("sat").unwrap(),
+          timestamp: row.get("timestamp").unwrap(),
+          sha256: row.take("sha256").unwrap(),
+          text: row.take("text").unwrap(),
+          is_json: row.get("is_json").unwrap(),
+          is_maybe_json: row.take("is_maybe_json").unwrap(),
+          is_bitmap_style: row.take("is_bitmap_style").unwrap(),
+          is_recursive: row.get("is_recursive").unwrap(),
+        },
+      )
+      .await
+      .unwrap();
     inscriptions
   }
-  
-  async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> (Metadata, (f64, f64)) {
+
+  async fn get_random_inscription(
+    pool: mysql_async::Pool,
+    random_float: f64,
+  ) -> (Metadata, (f64, f64)) {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let random_inscription_band = conn.exec_map(
       "SELECT first_number, band_start, band_end FROM weights where band_end>:random_float limit 1",
@@ -2443,41 +2838,50 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     .unwrap()
     .pop()
     .unwrap();
-    let metadata: Metadata = conn.exec_map(
-      "SELECT * from ordinals where sequence_number=:sequence_number limit 1", 
-      params! {
-        "sequence_number" => random_inscription_band.sequence_number
-      },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
-    ).await
-    .unwrap()
-    .pop()
-    .unwrap();
-    (metadata,(random_inscription_band.start, random_inscription_band.end))
+    let metadata: Metadata = conn
+      .exec_map(
+        "SELECT * from ordinals where sequence_number=:sequence_number limit 1",
+        params! {
+          "sequence_number" => random_inscription_band.sequence_number
+        },
+        |mut row: mysql_async::Row| Metadata {
+          id: row.get("id").unwrap(),
+          content_length: row.take("content_length").unwrap(),
+          content_type: row.take("content_type").unwrap(),
+          genesis_fee: row.get("genesis_fee").unwrap(),
+          genesis_height: row.get("genesis_height").unwrap(),
+          genesis_transaction: row.get("genesis_transaction").unwrap(),
+          pointer: row.take("pointer").unwrap(),
+          number: row.get("number").unwrap(),
+          sequence_number: row.get("sequence_number").unwrap(),
+          parent: row.take("parent").unwrap(),
+          metaprotocol: row.take("metaprotocol").unwrap(),
+          embedded_metadata: row.take("embedded_metadata").unwrap(),
+          sat: row.take("sat").unwrap(),
+          timestamp: row.get("timestamp").unwrap(),
+          sha256: row.take("sha256").unwrap(),
+          text: row.take("text").unwrap(),
+          is_json: row.get("is_json").unwrap(),
+          is_maybe_json: row.take("is_maybe_json").unwrap(),
+          is_bitmap_style: row.take("is_bitmap_style").unwrap(),
+          is_recursive: row.get("is_recursive").unwrap(),
+        },
+      )
+      .await
+      .unwrap()
+      .pop()
+      .unwrap();
+    (
+      metadata,
+      (random_inscription_band.start, random_inscription_band.end),
+    )
   }
 
-  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32, mut bands: Vec<(f64, f64)>) -> (Vec<Metadata>, Vec<(f64, f64)>) {
+  async fn get_random_inscriptions(
+    pool: mysql_async::Pool,
+    n: u32,
+    mut bands: Vec<(f64, f64)>,
+  ) -> (Vec<Metadata>, Vec<(f64, f64)>) {
     let n = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
@@ -2498,7 +2902,10 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     let mut set = JoinSet::new();
     let mut random_metadatas = Vec::new();
     for i in 0..n {
-      set.spawn(Self::get_random_inscription(pool.clone(), random_floats[i as usize]));
+      set.spawn(Self::get_random_inscription(
+        pool.clone(),
+        random_floats[i as usize],
+      ));
     }
     while let Some(res) = set.join_next().await {
       let random_inscription_details = res.unwrap();
@@ -2515,29 +2922,34 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> Transfer {
     let mut conn = Self::get_conn(pool).await.unwrap();
-    let transfer = conn.exec_map(
-      "select * from transfers where id=:id order by block_number desc limit 1", 
-      params! {
-        "id" => inscription_id
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
-    ).await.unwrap().pop().unwrap();
+    let transfer = conn
+      .exec_map(
+        "select * from transfers where id=:id order by block_number desc limit 1",
+        params! {
+          "id" => inscription_id
+        },
+        |row: mysql_async::Row| Transfer {
+          id: row.get("id").unwrap(),
+          block_number: row.get("block_number").unwrap(),
+          block_timestamp: row.get("block_timestamp").unwrap(),
+          satpoint: row.get("satpoint").unwrap(),
+          transaction: row.get("transaction").unwrap(),
+          offset: row.get("offset").unwrap(),
+          address: row.get("address").unwrap(),
+          is_genesis: row.get("is_genesis").unwrap(),
+        },
+      )
+      .await
+      .unwrap()
+      .pop()
+      .unwrap();
     transfer
   }
 
   async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> Transfer {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let transfer = conn.exec_map(
-      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1",
       params! {
         "number" => number
       },
@@ -2557,29 +2969,32 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> Vec<Transfer> {
     let mut conn = Self::get_conn(pool).await.unwrap();
-    let transfers = conn.exec_map(
-      "select * from transfers where id=:id order by block_number asc", 
-      params! {
-        "id" => inscription_id
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
-    ).await.unwrap();
+    let transfers = conn
+      .exec_map(
+        "select * from transfers where id=:id order by block_number asc",
+        params! {
+          "id" => inscription_id
+        },
+        |row: mysql_async::Row| Transfer {
+          id: row.get("id").unwrap(),
+          block_number: row.get("block_number").unwrap(),
+          block_timestamp: row.get("block_timestamp").unwrap(),
+          satpoint: row.get("satpoint").unwrap(),
+          transaction: row.get("transaction").unwrap(),
+          offset: row.get("offset").unwrap(),
+          address: row.get("address").unwrap(),
+          is_genesis: row.get("is_genesis").unwrap(),
+        },
+      )
+      .await
+      .unwrap();
     transfers
   }
 
   async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> Vec<Transfer> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let transfers = conn.exec_map(
-      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
+      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc",
       params! {
         "number" => number
       },
@@ -2597,7 +3012,10 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     transfers
   }
 
-  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<TransferWithMetadata> {
+  async fn get_inscriptions_by_address(
+    pool: mysql_async::Pool,
+    address: String,
+  ) -> Vec<TransferWithMetadata> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let transfers = conn.exec_map(
       "select a.*, o.* from addresses a left join ordinals o on a.id=o.id where a.address=:address",
@@ -2609,7 +3027,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_number: row.get("block_number").unwrap(),
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),        
+        transaction: row.get("transaction").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap(),
@@ -2640,14 +3058,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> Vec<Metadata> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE sat=:sat", 
+      "SELECT * FROM ordinals WHERE sat=:sat",
       params! {
         "sat" => sat
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
+        content_type: row.take("content_type").unwrap(),
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
@@ -2664,8 +3082,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap(),
         is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+        is_recursive: row.get("is_recursive").unwrap(),
+      },
     );
     let result = result.await.unwrap();
     result
@@ -2674,14 +3092,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> Vec<Metadata> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
-      "select * from ordinals where sat in (select sat from sat where block=:block)", 
+      "select * from ordinals where sat in (select sat from sat where block=:block)",
       params! {
         "block" => block
       },
       |mut row: mysql_async::Row| Metadata {
         id: row.get("id").unwrap(),
         content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
+        content_type: row.take("content_type").unwrap(),
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
@@ -2698,8 +3116,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_json: row.get("is_json").unwrap(),
         is_maybe_json: row.take("is_maybe_json").unwrap(),
         is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+        is_recursive: row.get("is_recursive").unwrap(),
+      },
     );
     let result = result.await.unwrap();
     result
@@ -2708,7 +3126,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> SatMetadata {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
-      "SELECT * FROM sat WHERE sat=:sat", 
+      "SELECT * FROM sat WHERE sat=:sat",
       params! {
         "sat" => sat
       },
@@ -2724,17 +3142,21 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         offset: row.get("offset").unwrap(),
         rarity: row.get("rarity").unwrap(),
         percentile: row.get("percentile").unwrap(),
-        timestamp: row.get("timestamp").unwrap()
-      }
+        timestamp: row.get("timestamp").unwrap(),
+      },
     );
     let result = result.await.unwrap().pop().unwrap();
     result
   }
 
-  async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_edition_procedure(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await.unwrap();
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions")
+      .await
+      .unwrap();
     tx.query_drop(
       r#"CREATE PROCEDURE update_editions()
       BEGIN
@@ -2759,9 +3181,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
       END;"#).await.unwrap();
-    tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT editions_event 
-                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
+    tx.query_drop(r"DROP EVENT IF EXISTS editions_event")
+      .await
+      .unwrap();
+    tx.query_drop(r"CREATE EVENT editions_event
+                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400)
                           DO
                           BEGIN
                             SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
@@ -2778,10 +3202,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     }
   }
 
-  async fn create_weights_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_weights_procedure(
+    pool: mysql_async::Pool,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await.unwrap();
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights")
+      .await
+      .unwrap();
     tx.query_drop(
       r#"CREATE PROCEDURE update_weights()
       BEGIN
@@ -2793,16 +3221,16 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_1", now());
         CREATE TABLE weights_1 as
-        select sha256, 
-               min(sequence_number) as first_number, 
-               sum(genesis_fee) as total_fee, 
-               max(content_length) as content_length, 
+        select sha256,
+               min(sequence_number) as first_number,
+               sum(genesis_fee) as total_fee,
+               max(content_length) as content_length,
                count(*) as count
-        from ordinals 
+        from ordinals
         where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
-          select sha256 
-          from content_moderation 
-          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
+          select sha256
+          from content_moderation
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL"
           or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_1", now(), found_rows());
@@ -2819,7 +3247,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_3", now());
         CREATE TABLE weights_3 AS
-        SELECT sha256, 
+        SELECT sha256,
               min(class) as class,
               min(first_number) AS first_number,
               sum(total_fee) AS total_fee
@@ -2835,7 +3263,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_5", now());
         CREATE TABLE weights_5 AS
         SELECT *,
-              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
+              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end,
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_5", now(), found_rows());
@@ -2849,22 +3277,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
-      
+
       ELSE
-      
+
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW", now());
       DROP TABLE IF EXISTS weights_new;
         CREATE TABLE weights_1 as
-        select sha256, 
-               min(sequence_number) as first_number, 
-               sum(genesis_fee) as total_fee, 
-               max(content_length) as content_length, 
+        select sha256,
+               min(sequence_number) as first_number,
+               sum(genesis_fee) as total_fee,
+               max(content_length) as content_length,
                count(*) as count
-        from ordinals 
+        from ordinals
         where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
-          select sha256 
-          from content_moderation 
-          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
+          select sha256
+          from content_moderation
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL"
           or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
         group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_1", now(), found_rows());
@@ -2881,7 +3309,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_2", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_3", now());
         CREATE TABLE weights_3 AS
-        SELECT sha256, 
+        SELECT sha256,
               min(class) as class,
               min(first_number) AS first_number,
               sum(total_fee) AS total_fee
@@ -2897,7 +3325,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_5", now());
         CREATE TABLE weights_5 AS
         SELECT *,
-              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
+              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end,
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_5", now(), found_rows());
@@ -2913,16 +3341,18 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         RENAME TABLE weights to weights_old, weights_new to weights;
         DROP TABLE IF EXISTS weights_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
-      END IF;      
+      END IF;
       DROP TABLE IF EXISTS weights_1;
       DROP TABLE IF EXISTS weights_2;
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
       DROP TABLE IF EXISTS weights_5;
       END;"#).await.unwrap();
-    tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
-    tx.query_drop(r"CREATE EVENT weights_event 
-                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
+    tx.query_drop(r"DROP EVENT IF EXISTS weights_event")
+      .await
+      .unwrap();
+    tx.query_drop(r"CREATE EVENT weights_event
+                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200)
                           DO
                           BEGIN
                             SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
@@ -2941,15 +3371,42 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn create_procedure_log(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS proc_log (
+    conn
+      .query_drop(
+        r"CREATE TABLE IF NOT EXISTS proc_log (
         id int unsigned auto_increment primary key,
         proc_name varchar(40),
         step_name varchar(40),
         ts timestamp,
         rows_returned int
-      )").await.unwrap();
+      )",
+      )
+      .await
+      .unwrap();
     Ok(())
   }
-
 }
+
+#[test]
+fn test_atom_parse() {
+  let tx_hex = "01000000000101248377dc14529e63da62d32f858d2217c19d1cd999ff04d7ed874aa44cd032500000000000ffffffff02e80300000000000022512060496321373305f715858ce3c9feddfd87e5f3981b7c8dd2bb2116666064a4540000000000000000156a13313730343234363931383a35383632313432320340cacddd587f32f47bbc5f3d17c5e370673327865707494950a2f4a60d5ece229a39762535087720c5c36d54b2bfcc5e94887057c93d5fc65333f8bb0bf918c72879202aad1b685f47ea1983e17c93967108a387aecd0a7368ba06b3b62cf2ac0b4d01ac00630461746f6d03646d744aa16461726773a56474696d651a6594be5b656e6f6e63651a007ce14068626974776f726b63643530333268626974776f726b7264313334386b6d696e745f7469636b6572656d6f7665316821c02aad1b685f47ea1983e17c93967108a387aecd0a7368ba06b3b62cf2ac0b4d0100000000";
+  let tx_bytes = hex::decode(tx_hex).unwrap();
+  let tx: Transaction = bitcoin::consensus::deserialize(&tx_bytes).unwrap();
+
+  dbg!(&tx);
+  let inscription = ParsedAtom::from_transaction(&tx);
+  dbg!(&inscription);
+  assert_eq!(inscription.len(), 1);
+}
+
+#[test]
+fn test_atom_parse_mint(){
+    let tx_hex = "01000000000101248377dc14529e63da62d32f858d2217c19d1cd999ff04d7ed874aa44cd032500000000000ffffffff02e80300000000000022512060496321373305f715858ce3c9feddfd87e5f3981b7c8dd2bb2116666064a4540000000000000000156a13313730343234363931383a35383632313432320340cacddd587f32f47bbc5f3d17c5e370673327865707494950a2f4a60d5ece229a39762535087720c5c36d54b2bfcc5e94887057c93d5fc65333f8bb0bf918c72879202aad1b685f47ea1983e17c93967108a387aecd0a7368ba06b3b62cf2ac0b4d01ac00630461746f6d03646d744aa16461726773a56474696d651a6594be5b656e6f6e63651a007ce14068626974776f726b63643530333268626974776f726b7264313334386b6d696e745f7469636b6572656d6f7665316821c02aad1b685f47ea1983e17c93967108a387aecd0a7368ba06b3b62cf2ac0b4d0100000000";
+    let tx_bytes = hex::decode(&tx_hex).unwrap();
+    let tx:Transaction = bitcoin::consensus::deserialize(&tx_bytes).unwrap();
+
+    let inscription = ParsedAtom::from_transaction(&tx);
+
+    assert_eq!(inscription.len(), 1);
+}
+

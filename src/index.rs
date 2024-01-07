@@ -1293,11 +1293,12 @@ impl Index {
     )
   }
 
-  pub(crate) fn get_transfers_by_block_height(&self, height: u64) -> Result<Vec<(InscriptionId, SatPoint)>>  {
+  pub(crate) fn get_transfers_by_block_height(
+    &self,
+    height: u64,
+  ) -> Result<Vec<(InscriptionId, SatPoint)>> {
     let mut return_vec = Vec::new();
-    let rtx = self
-      .database
-      .begin_read()?;
+    let rtx = self.database.begin_read()?;
     let height_to_transfers = rtx.open_multimap_table(HEIGHT_TO_TRANSFERS)?;
     let transfers = height_to_transfers.get(&height)?;
     for transfer in transfers {
@@ -1312,9 +1313,7 @@ impl Index {
   }
 
   pub(crate) fn get_blocks_indexed(&self) -> Result<u64> {
-    let rtx = self
-      .database
-      .begin_read()?;
+    let rtx = self.database.begin_read()?;
     let blocks_indexed = rtx
       .open_table(HEIGHT_TO_BLOCK_HASH)?
       .range(0..)?
