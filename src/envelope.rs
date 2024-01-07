@@ -2,7 +2,8 @@ use core::panic;
 
 use log::info;
 
-use crate::inscription::TxDmt;
+use crate::inscription::Atom;
+use crate::inscription::{DMT,Deploy};
 
 use {
   super::*,
@@ -32,11 +33,12 @@ pub(crate) const METAPROTOCOL_TAG: [u8; 1] = [7];
 type Result<T> = std::result::Result<T, script::Error>;
 type RawEnvelope = Envelope<Vec<Vec<u8>>>;
 pub(crate) type ParsedEnvelope = Envelope<Inscription>;
-pub(crate) type ParsedAtom = Envelope<TxDmt>;
+pub(crate) type ParsedAtom = Envelope<Atom>;
 
-#[derive(Debug,Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub enum AtomProtocol {
-  #[default] NFT,
+  #[default]
+  NFT,
   DFT,
   MOD,
   EVT,
@@ -44,9 +46,10 @@ pub enum AtomProtocol {
   DAT,
 }
 
-#[derive(Debug,Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub enum EnvelopeType {
-  #[default] ORD,
+  #[default]
+  ORD,
   ATOM(AtomProtocol),
 }
 #[derive(Debug, Default, PartialEq, Clone)]
@@ -156,8 +159,16 @@ impl ParsedEnvelope {
 impl From<RawEnvelope> for ParsedAtom {
   fn from(envelope: RawEnvelope) -> Self {
     let body = envelope.payload.first().unwrap();
-    let payload:TxDmt = ciborium::from_reader(body.as_slice()).unwrap();
-    dbg!(&payload);
+    let payload = match envelope.e_type {
+      EnvelopeType::ATOM(ref ty) => match ty {
+        AtomProtocol::DMT => Atom::Mint(ciborium::from_reader::<DMT, _>(body.as_slice()).unwrap()),
+        AtomProtocol::DFT => Atom::Deploy(ciborium::from_reader::<Deploy,_>(body.as_slice()).unwrap()),
+        _ => {
+          todo!()
+        }
+      },
+      _ => unreachable!(),
+    };
     Self {
       payload,
       input: envelope.input,

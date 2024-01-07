@@ -38,25 +38,31 @@ pub struct Inscription {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct TxDmt {
-    pub args: DmtArgs,
+pub struct DMT {
+  pub args: DmtArgs,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq)]
+pub enum Atom {
+  Mint(DMT),
+  Deploy(Deploy),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DmtArgs {
-    pub time: i64,
-    pub nonce: i64,
-    pub bitworkc: String,
-    pub bitworkr: String,
-    #[serde(rename = "mint_ticker")]
-    pub mint_ticker: String,
+  pub time: i64,
+  pub nonce: i64,
+  pub bitworkc: String,
+  pub bitworkr: String,
+  #[serde(rename = "mint_ticker")]
+  pub mint_ticker: String,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct Atom {
-  pub args: Args,
+pub struct Deploy {
+  pub args: DeployArgs,
   pub desc: String,
   pub name: String,
   pub image: String,
@@ -67,7 +73,7 @@ pub struct Atom {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct Args {
+pub struct DeployArgs {
   pub time: i64,
   pub nonce: i64,
   pub bitworkc: String,
