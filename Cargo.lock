@@ -1210,12 +1210,6 @@ checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
 
 [[package]]
 name = "byteorder"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fc10e8cc6b2580fda3f36eb6dc5316657f812a3df879a44a66fc9f0fdbc4855"
-
-[[package]]
-name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
@@ -1234,16 +1228,6 @@ checksum = "e47d3a8076e283f3acd27400535992edb3ba4b5bb72f8891ad8fbe7932a7d4b9"
 dependencies = [
  "bytes",
  "either",
-]
-
-[[package]]
-name = "cbor"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e56053652b4b5c0ded5ae6183c7cd547ad2dd6bcce149658bef052a4995533bd"
-dependencies = [
- "byteorder 0.5.3",
- "rustc-serialize",
 ]
 
 [[package]]
@@ -2624,7 +2608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f3dfdbdd72063086ff443e297b61695500514b1e41095b6fb9a5ab48a70a711"
 dependencies = [
  "bytemuck",
- "byteorder 1.5.0",
+ "byteorder",
  "color_quant",
  "exr",
  "gif",
@@ -3117,7 +3101,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9ef834d5ed55e494a2ae350220314dc4aacd1c43a9498b00e320e0ea352a5c3"
 dependencies = [
- "byteorder 1.5.0",
+ "byteorder",
  "bytes",
  "num-rational",
  "serde",
@@ -3187,7 +3171,7 @@ dependencies = [
  "bindgen",
  "bitflags 2.4.1",
  "bitvec",
- "byteorder 1.5.0",
+ "byteorder",
  "bytes",
  "cc",
  "cmake",
@@ -3325,7 +3309,7 @@ version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc84195820f291c7697304f3cbdadd1cb7199c0efc917ff5eafd71225c136151"
 dependencies = [
- "byteorder 1.5.0",
+ "byteorder",
  "lazy_static",
  "libm",
  "num-integer",
@@ -3492,7 +3476,6 @@ dependencies = [
  "bip39",
  "bitcoin",
  "boilerplate",
- "cbor",
  "chrono",
  "ciborium",
  "clap",
@@ -4284,12 +4267,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
-name = "rustc-serialize"
-version = "0.3.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe834bc780604f4674073badbad26d7219cadfb4a2275802db12cbae17498401"
-
-[[package]]
 name = "rustc_version"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4765,7 +4742,7 @@ checksum = "d84b0a3c3739e220d94b3239fd69fb1f74bc36e16643423bd99de3b43c21bfbd"
 dependencies = [
  "ahash 0.8.6",
  "atoi",
- "byteorder 1.5.0",
+ "byteorder",
  "bytes",
  "chrono",
  "crc",
@@ -4851,7 +4828,7 @@ dependencies = [
  "atoi",
  "base64 0.21.5",
  "bitflags 2.4.1",
- "byteorder 1.5.0",
+ "byteorder",
  "bytes",
  "chrono",
  "crc",
@@ -4895,7 +4872,7 @@ dependencies = [
  "atoi",
  "base64 0.21.5",
  "bitflags 2.4.1",
- "byteorder 1.5.0",
+ "byteorder",
  "chrono",
  "crc",
  "dotenvy",
