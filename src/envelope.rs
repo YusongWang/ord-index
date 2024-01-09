@@ -3,7 +3,7 @@ use core::panic;
 use log::info;
 
 use crate::inscription::Atom;
-use crate::inscription::{DMT,Deploy};
+use crate::inscription::{Deploy, DMT};
 
 use {
   super::*,
@@ -89,6 +89,29 @@ fn remove_and_concatenate_field(
     Some(value.into_iter().flatten().cloned().collect())
   }
 }
+#[derive(Debug)]
+pub enum EnvelopeData {
+  Brc(ParsedEnvelope),
+  Arc(ParsedAtom),
+}
+
+impl EnvelopeData {
+  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
+    RawEnvelope::from_transaction(transaction)
+      .into_iter()
+      .map(|envelope| envelope.into())
+      .collect()
+  }
+}
+
+impl From<RawEnvelope> for EnvelopeData {
+  fn from(value: RawEnvelope) -> Self {
+    match value.e_type {
+      EnvelopeType::ATOM(_) => Self::Arc(value.into()),
+      EnvelopeType::ORD => Self::Brc(value.into()),
+    }
+  }
+}
 
 impl From<RawEnvelope> for ParsedEnvelope {
   fn from(envelope: RawEnvelope) -> Self {
@@ -162,7 +185,13 @@ impl From<RawEnvelope> for ParsedAtom {
     let payload = match envelope.e_type {
       EnvelopeType::ATOM(ref ty) => match ty {
         AtomProtocol::DMT => Atom::Mint(ciborium::from_reader::<DMT, _>(body.as_slice()).unwrap()),
-        AtomProtocol::DFT => Atom::Deploy(ciborium::from_reader::<Deploy,_>(body.as_slice()).unwrap()),
+        AtomProtocol::DFT => {
+          Atom::Deploy(ciborium::from_reader::<Deploy, _>(body.as_slice()).unwrap())
+        }
+        AtomProtocol::NFT => {
+            dbg!(body.as_slice());
+            unimplemented!();
+        }
         _ => {
           todo!()
         }

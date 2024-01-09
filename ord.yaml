@@ -1,15 +1,15 @@
 # Example Config
 
 # use username `bar` and password `foo` for bitcoind RPC calls
-bitcoin_rpc_user: btc
-bitcoin_rpc_pass: btc2018
+bitcoin_rpc_user: bitcoin
+bitcoin_rpc_pass: bitcoin2024
 
 # prevent `ord server` from serving the content of the inscriptions below
 hidden:
 
 
 # DB must already exist, tables will be automatically created
-db_connection_string: mysql://root:12345678@localhost:3306/ord
+db_connection_string: mysql://root:!Woaini5211314@localhost:3306/ord
 
 # if you want to reindex (i.e. new db/new db format/new s3 bucket), this will setting will start the indexer from the desired number, rather than the last populated number in db
 # start_number_override: 0

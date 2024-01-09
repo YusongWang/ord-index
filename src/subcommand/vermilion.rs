@@ -1,6 +1,8 @@
 use super::*;
+use crate::envelope::EnvelopeData;
 use crate::envelope::ParsedAtom;
 use crate::index::fetcher;
+use crate::inscription::Atom;
 use crate::subcommand::server;
 use axum_server::Handle;
 use mysql_async::Params;
@@ -438,7 +440,25 @@ impl Vermilion {
           let cloned_ids = inscription_ids.clone();
           let id_txs: Vec<_> = cloned_ids.into_iter().zip(clean_txs.into_iter()).collect();
           let mut inscriptions: Vec<Inscription> = Vec::new();
+          let mut atoms:Vec<Atom> = Vec::new();
+
+
           for (inscription_id, tx) in id_txs {
+            //let atom_tx = ParsedAtom::from_transaction(&tx).into_iter().nth(inscription_id.index as usize).map(|e|e.payload).unwrap();
+            let envelop_data = EnvelopeData::from_transaction(&tx);
+            if let Some(atom) = envelop_data.iter()
+                            .nth(inscription_id.index as usize)
+                            .filter(|item|matches!(item,EnvelopeData::Arc(_)))
+                            .map(|item|match item {
+                                EnvelopeData::Arc(atom)=>atom,
+                                _=> unreachable!(),
+                            })
+                            .map(| envelope| envelope.payload.clone()) {
+                            dbg!(&atom);
+                            atoms.push(atom);
+                        };
+
+
             let inscription = ParsedEnvelope::from_transaction(&tx)
               .into_iter()
               .nth(inscription_id.index as usize)

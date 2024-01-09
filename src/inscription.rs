@@ -51,7 +51,7 @@ pub enum Atom {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DmtArgs {
-  pub time: i64,
+  pub time: Option<i64>,
   pub nonce: i64,
   pub bitworkc: String,
   pub bitworkr: String,
@@ -74,248 +74,249 @@ pub struct Deploy {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DeployArgs {
-  pub time: i64,
-  pub nonce: i64,
-  pub bitworkc: String,
-  #[serde(rename = "max_mints")]
-  pub max_mints: i64,
-  #[serde(rename = "mint_amount")]
-  pub mint_amount: i64,
-  #[serde(rename = "mint_height")]
-  pub mint_height: i64,
-  #[serde(rename = "mint_bitworkc")]
-  pub mint_bitworkc: String,
-  #[serde(rename = "mint_bitworkr")]
-  pub mint_bitworkr: String,
-  #[serde(rename = "request_ticker")]
-  pub request_ticker: String,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Legal {
-  pub terms: String,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Links {
-  pub x: X,
-  pub realm: Realm,
-  pub discord: Discord,
-  pub website: Website,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct X {
-  pub v: String,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Realm {
-  pub v: String,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Discord {
-  pub v: String,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Website {
-  pub v: String,
-}
-
-impl Inscription {
-  #[cfg(test)]
-  pub(crate) fn new(content_type: Option<Vec<u8>>, body: Option<Vec<u8>>) -> Self {
-    Self {
-      content_type,
-      body,
-      ..Default::default()
+      pub time: i64,
+      pub nonce: i64,
+      pub bitworkc: String,
+      #[serde(rename = "max_mints")]
+      pub max_mints: i64,
+      #[serde(rename = "mint_amount")]
+      pub mint_amount: i64,
+      #[serde(rename = "mint_height")]
+      pub mint_height: i64,
+      #[serde(rename = "mint_bitworkc")]
+      pub mint_bitworkc: String,
+      #[serde(rename = "mint_bitworkr")]
+      pub mint_bitworkr: String,
+      #[serde(rename = "request_ticker")]
+      pub request_ticker: String,
     }
-  }
 
-  pub(crate) fn from_file(
-    chain: Chain,
-    path: impl AsRef<Path>,
-    parent: Option<InscriptionId>,
-    pointer: Option<u64>,
-    metaprotocol: Option<String>,
-    metadata: Option<Vec<u8>>,
-  ) -> Result<Self, Error> {
-    let path = path.as_ref();
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Legal {
+      pub terms: String,
+    }
 
-    let body = fs::read(path).with_context(|| format!("io error reading {}", path.display()))?;
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Links {
+      pub x: X,
+      pub realm: Realm,
+      pub discord: Discord,
+      pub website: Website,
+    }
 
-    if let Some(limit) = chain.inscription_content_size_limit() {
-      let len = body.len();
-      if len > limit {
-        bail!("content size of {len} bytes exceeds {limit} byte limit for {chain} inscriptions");
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct X {
+      pub v: String,
+    }
+
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Realm {
+      pub v: String,
+    }
+
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Discord {
+      pub v: String,
+    }
+
+    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Website {
+      pub v: String,
+    }
+
+    impl Inscription {
+      #[cfg(test)]
+      pub(crate) fn new(content_type: Option<Vec<u8>>, body: Option<Vec<u8>>) -> Self {
+        Self {
+          content_type,
+          body,
+          ..Default::default()
+        }
       }
-    }
 
-    let content_type = Media::content_type_for_path(path)?;
+      pub(crate) fn from_file(
+        chain: Chain,
+        path: impl AsRef<Path>,
+        parent: Option<InscriptionId>,
+        pointer: Option<u64>,
+        metaprotocol: Option<String>,
+        metadata: Option<Vec<u8>>,
+      ) -> Result<Self, Error> {
+        let path = path.as_ref();
 
-    Ok(Self {
-      body: Some(body),
-      content_type: Some(content_type.into()),
-      metadata,
-      metaprotocol: metaprotocol.map(|metaprotocol| metaprotocol.into_bytes()),
-      parent: parent.map(|id| id.parent_value()),
-      pointer: pointer.map(Self::pointer_value),
-      ..Default::default()
-    })
-  }
+        let body = fs::read(path).with_context(|| format!("io error reading {}", path.display()))?;
 
-  fn pointer_value(pointer: u64) -> Vec<u8> {
-    let mut bytes = pointer.to_le_bytes().to_vec();
+        if let Some(limit) = chain.inscription_content_size_limit() {
+          let len = body.len();
+          if len > limit {
+            bail!("content size of {len} bytes exceeds {limit} byte limit for {chain} inscriptions");
+          }
+        }
 
-    while bytes.last().copied() == Some(0) {
-      bytes.pop();
-    }
+        let content_type = Media::content_type_for_path(path)?;
 
-    bytes
-  }
 
-  pub(crate) fn append_reveal_script_to_builder(
-    &self,
-    mut builder: script::Builder,
-  ) -> script::Builder {
-    builder = builder
-      .push_opcode(opcodes::OP_FALSE)
-      .push_opcode(opcodes::all::OP_IF)
-      .push_slice(envelope::PROTOCOL_ORD_ID);
-
-    if let Some(content_type) = self.content_type.clone() {
-      builder = builder
-        .push_slice(envelope::CONTENT_TYPE_TAG)
-        .push_slice(PushBytesBuf::try_from(content_type).unwrap());
-    }
-
-    if let Some(protocol) = self.metaprotocol.clone() {
-      builder = builder
-        .push_slice(envelope::METAPROTOCOL_TAG)
-        .push_slice(PushBytesBuf::try_from(protocol).unwrap());
-    }
-
-    if let Some(parent) = self.parent.clone() {
-      builder = builder
-        .push_slice(envelope::PARENT_TAG)
-        .push_slice(PushBytesBuf::try_from(parent).unwrap());
-    }
-
-    if let Some(pointer) = self.pointer.clone() {
-      builder = builder
-        .push_slice(envelope::POINTER_TAG)
-        .push_slice(PushBytesBuf::try_from(pointer).unwrap());
-    }
-
-    if let Some(metadata) = &self.metadata {
-      for chunk in metadata.chunks(520) {
-        builder = builder.push_slice(envelope::METADATA_TAG);
-        builder = builder.push_slice(PushBytesBuf::try_from(chunk.to_vec()).unwrap());
+        Ok(Self {
+          body: Some(body),
+          content_type: Some(content_type.into()),
+          metadata,
+          metaprotocol: metaprotocol.map(|metaprotocol| metaprotocol.into_bytes()),
+          parent: parent.map(|id| id.parent_value()),
+          pointer: pointer.map(Self::pointer_value),
+          ..Default::default()
+        })
       }
-    }
 
-    if let Some(body) = &self.body {
-      builder = builder.push_slice(envelope::BODY_TAG);
-      for chunk in body.chunks(520) {
-        builder = builder.push_slice(PushBytesBuf::try_from(chunk.to_vec()).unwrap());
+      fn pointer_value(pointer: u64) -> Vec<u8> {
+        let mut bytes = pointer.to_le_bytes().to_vec();
+
+        while bytes.last().copied() == Some(0) {
+          bytes.pop();
+        }
+
+        bytes
       }
-    }
 
-    builder.push_opcode(opcodes::all::OP_ENDIF)
-  }
+      pub(crate) fn append_reveal_script_to_builder(
+        &self,
+        mut builder: script::Builder,
+      ) -> script::Builder {
+        builder = builder
+          .push_opcode(opcodes::OP_FALSE)
+          .push_opcode(opcodes::all::OP_IF)
+          .push_slice(envelope::PROTOCOL_ORD_ID);
 
-  #[cfg(test)]
-  pub(crate) fn append_reveal_script(&self, builder: script::Builder) -> ScriptBuf {
-    self.append_reveal_script_to_builder(builder).into_script()
-  }
+        if let Some(content_type) = self.content_type.clone() {
+          builder = builder
+            .push_slice(envelope::CONTENT_TYPE_TAG)
+            .push_slice(PushBytesBuf::try_from(content_type).unwrap());
+        }
 
-  pub(crate) fn append_batch_reveal_script_to_builder(
-    inscriptions: &[Inscription],
-    mut builder: script::Builder,
-  ) -> script::Builder {
-    for inscription in inscriptions {
-      builder = inscription.append_reveal_script_to_builder(builder);
-    }
+        if let Some(protocol) = self.metaprotocol.clone() {
+          builder = builder
+            .push_slice(envelope::METAPROTOCOL_TAG)
+            .push_slice(PushBytesBuf::try_from(protocol).unwrap());
+        }
 
-    builder
-  }
+        if let Some(parent) = self.parent.clone() {
+          builder = builder
+            .push_slice(envelope::PARENT_TAG)
+            .push_slice(PushBytesBuf::try_from(parent).unwrap());
+        }
 
-  pub(crate) fn append_batch_reveal_script(
-    inscriptions: &[Inscription],
-    builder: script::Builder,
-  ) -> ScriptBuf {
-    Inscription::append_batch_reveal_script_to_builder(inscriptions, builder).into_script()
-  }
+        if let Some(pointer) = self.pointer.clone() {
+          builder = builder
+            .push_slice(envelope::POINTER_TAG)
+            .push_slice(PushBytesBuf::try_from(pointer).unwrap());
+        }
 
-  pub(crate) fn media(&self) -> Media {
-    if self.body.is_none() {
-      return Media::Unknown;
-    }
+        if let Some(metadata) = &self.metadata {
+          for chunk in metadata.chunks(520) {
+            builder = builder.push_slice(envelope::METADATA_TAG);
+            builder = builder.push_slice(PushBytesBuf::try_from(chunk.to_vec()).unwrap());
+          }
+        }
 
-    let Some(content_type) = self.content_type() else {
-      return Media::Unknown;
-    };
+        if let Some(body) = &self.body {
+          builder = builder.push_slice(envelope::BODY_TAG);
+          for chunk in body.chunks(520) {
+            builder = builder.push_slice(PushBytesBuf::try_from(chunk.to_vec()).unwrap());
+          }
+        }
 
-    content_type.parse().unwrap_or(Media::Unknown)
-  }
-
-  pub(crate) fn body(&self) -> Option<&[u8]> {
-    Some(self.body.as_ref()?)
-  }
-
-  pub(crate) fn into_body(self) -> Option<Vec<u8>> {
-    self.body
-  }
-
-  pub(crate) fn content_length(&self) -> Option<usize> {
-    Some(self.body()?.len())
-  }
-
-  pub(crate) fn content_type(&self) -> Option<&str> {
-    str::from_utf8(self.content_type.as_ref()?).ok()
-  }
-
-  pub(crate) fn metadata(&self) -> Option<Value> {
-    ciborium::from_reader(Cursor::new(self.metadata.as_ref()?)).ok()
-  }
-
-  pub(crate) fn metaprotocol(&self) -> Option<&str> {
-    str::from_utf8(self.metaprotocol.as_ref()?).ok()
-  }
-
-  pub(crate) fn parent(&self) -> Option<InscriptionId> {
-    let value = self.parent.as_ref()?;
-
-    if value.len() < Txid::LEN {
-      return None;
-    }
-
-    if value.len() > Txid::LEN + 4 {
-      return None;
-    }
-
-    let (txid, index) = value.split_at(Txid::LEN);
-
-    if let Some(last) = index.last() {
-      // Accept fixed length encoding with 4 bytes (with potential trailing zeroes)
-      // or variable length (no trailing zeroes)
-      if index.len() != 4 && *last == 0 {
-        return None;
+        builder.push_opcode(opcodes::all::OP_ENDIF)
       }
-    }
 
-    let txid = Txid::from_slice(txid).unwrap();
+      #[cfg(test)]
+      pub(crate) fn append_reveal_script(&self, builder: script::Builder) -> ScriptBuf {
+        self.append_reveal_script_to_builder(builder).into_script()
+      }
 
-    let index = [
-      index.first().copied().unwrap_or(0),
+      pub(crate) fn append_batch_reveal_script_to_builder(
+        inscriptions: &[Inscription],
+        mut builder: script::Builder,
+      ) -> script::Builder {
+        for inscription in inscriptions {
+          builder = inscription.append_reveal_script_to_builder(builder);
+        }
+
+        builder
+      }
+
+      pub(crate) fn append_batch_reveal_script(
+        inscriptions: &[Inscription],
+        builder: script::Builder,
+      ) -> ScriptBuf {
+        Inscription::append_batch_reveal_script_to_builder(inscriptions, builder).into_script()
+      }
+
+      pub(crate) fn media(&self) -> Media {
+        if self.body.is_none() {
+          return Media::Unknown;
+        }
+
+        let Some(content_type) = self.content_type() else {
+          return Media::Unknown;
+        };
+
+        content_type.parse().unwrap_or(Media::Unknown)
+      }
+
+      pub(crate) fn body(&self) -> Option<&[u8]> {
+        Some(self.body.as_ref()?)
+      }
+
+      pub(crate) fn into_body(self) -> Option<Vec<u8>> {
+        self.body
+      }
+
+      pub(crate) fn content_length(&self) -> Option<usize> {
+        Some(self.body()?.len())
+      }
+
+      pub(crate) fn content_type(&self) -> Option<&str> {
+        str::from_utf8(self.content_type.as_ref()?).ok()
+      }
+
+      pub(crate) fn metadata(&self) -> Option<Value> {
+        ciborium::from_reader(Cursor::new(self.metadata.as_ref()?)).ok()
+      }
+
+      pub(crate) fn metaprotocol(&self) -> Option<&str> {
+        str::from_utf8(self.metaprotocol.as_ref()?).ok()
+      }
+
+      pub(crate) fn parent(&self) -> Option<InscriptionId> {
+        let value = self.parent.as_ref()?;
+
+        if value.len() < Txid::LEN {
+          return None;
+        }
+
+        if value.len() > Txid::LEN + 4 {
+          return None;
+        }
+
+        let (txid, index) = value.split_at(Txid::LEN);
+
+        if let Some(last) = index.last() {
+          // Accept fixed length encoding with 4 bytes (with potential trailing zeroes)
+          // or variable length (no trailing zeroes)
+          if index.len() != 4 && *last == 0 {
+            return None;
+          }
+        }
+
+        let txid = Txid::from_slice(txid).unwrap();
+
+        let index = [
+          index.first().copied().unwrap_or(0),
       index.get(1).copied().unwrap_or(0),
       index.get(2).copied().unwrap_or(0),
       index.get(3).copied().unwrap_or(0),
