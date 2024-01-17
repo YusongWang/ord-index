@@ -440,6 +440,7 @@ impl RawEnvelope {
               if atom_op == PROTOCOL_ATOM_NFT {
                 dbg!("Got Atom Protocol NFT");
                 e_type = EnvelopeType::ATOM(AtomProtocol::NFT);
+                return Ok(None);
               } else if atom_op == PROTOCOL_ATOM_DFT {
                 // Deploy FT
                 dbg!("Got Atom Protocol DFT");
@@ -447,15 +448,20 @@ impl RawEnvelope {
               } else if atom_op == PROTOCOL_ATOM_MOD {
                 dbg!("Got Atom Protocol MOD");
                 e_type = EnvelopeType::ATOM(AtomProtocol::MOD);
+                return Ok(None);
               } else if atom_op == PROTOCOL_ATOM_EVT {
                 dbg!("Got Atom Protocol EVT");
                 e_type = EnvelopeType::ATOM(AtomProtocol::EVT);
+                return Ok(None);
               } else if atom_op == PROTOCOL_ATOM_DMT {
                 e_type = EnvelopeType::ATOM(AtomProtocol::DMT);
                 dbg!("Got Atom Protocol DMT");
               } else if atom_op == PROTOCOL_ATOM_DAT {
                 e_type = EnvelopeType::ATOM(AtomProtocol::DAT);
                 dbg!("Got Atom Protocol DAT");
+                return Ok(None);
+              } else {
+                return Ok(None);
               }
             } else {
               pushnum = true;

@@ -21,6 +21,8 @@ use aws_sdk_s3 as s3;
 use s3::error::ProvideErrorMetadata;
 use s3::operation::get_object::GetObjectOutput;
 use s3::primitives::ByteStream;
+use s3::config::{Config as AwsConfig,Region as AwsRegion,Credentials as AwsCredentials};
+use aws_config::endpoint::Endpoint;
 
 use axum::{
   body::{Body, BoxBody},
@@ -321,9 +323,31 @@ impl Vermilion {
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str());
       let start_number_override = config.start_number_override;
-      let s3_config = aws_config::from_env().load().await;
-      let s3client = s3::Client::new(&s3_config);
+
       let s3_bucket_name = config.s3_bucket_name.unwrap();
+      let s3client = if cfg!(b2) {
+
+        let access_key = "86540615669c";
+        let secret_key = "005cb6b81854d0b649501c17aab74b8b8610a51aa6";
+
+        // One has to define something to be the credential provider name,
+        // but it doesn't seem like the value matters
+        let provider_name = "brc20index";
+        let creds = AwsCredentials::new(access_key, secret_key, None, None, &provider_name);
+
+        let b2_s3 = "https://s3.us-east-005.backblazeb2.com".to_string();
+        //let b2_endpoint = Endpoint::immutable(b2_s3.parse().unwrap()).unwrap();
+        let config = AwsConfig::builder()
+            .region(AwsRegion::new("us-east-005"))
+            .endpoint_url(b2_s3)
+            .credentials_provider(creds)
+            .build();
+
+        s3::Client::from_conf(config)
+      } else {
+        let s3_config = aws_config::from_env().load().await;
+        s3::Client::new(&s3_config)
+      };
       let s3_upload_start_number = config.s3_upload_start_number.unwrap_or(0);
       let s3_head_check = config.s3_head_check.unwrap_or(false);
       let n_threads = self.n_threads.unwrap_or(1).into();
