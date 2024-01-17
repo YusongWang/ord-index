@@ -325,17 +325,19 @@ impl Vermilion {
       let start_number_override = config.start_number_override;
 
       let s3_bucket_name = config.s3_bucket_name.unwrap();
-      let s3client = if cfg!(b2) {
 
-        let access_key = "86540615669c";
-        let secret_key = "005cb6b81854d0b649501c17aab74b8b8610a51aa6";
+      #[cfg(feature = "b2")]
+      let s3client = {
+
+        let access_key = "00586540615669c0000000001";
+        let secret_key = "K005Gf4A658RdrA4jkAfTdLcByRO9XE";
 
         // One has to define something to be the credential provider name,
         // but it doesn't seem like the value matters
         let provider_name = "brc20index";
         let creds = AwsCredentials::new(access_key, secret_key, None, None, &provider_name);
 
-        let b2_s3 = "https://s3.us-east-005.backblazeb2.com".to_string();
+        let b2_s3 = "https://s3.us-east-005.backblazeb2.com/".to_string();
         //let b2_endpoint = Endpoint::immutable(b2_s3.parse().unwrap()).unwrap();
         let config = AwsConfig::builder()
             .region(AwsRegion::new("us-east-005"))
@@ -344,7 +346,9 @@ impl Vermilion {
             .build();
 
         s3::Client::from_conf(config)
-      } else {
+      };
+      #[cfg(not(feature = "b2"))]
+      let s3client = {
         let s3_config = aws_config::from_env().load().await;
         s3::Client::new(&s3_config)
       };

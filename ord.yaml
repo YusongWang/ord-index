@@ -15,11 +15,11 @@ db_connection_string: mysql://root:!Woaini5211314@localhost:3306/ord
 # start_number_override: 0
 
 # AWS S3 bucket name
-s3_bucket_name: brc20
+s3_bucket_name: brc20index
 
 # Skip uploading inscription numbers before this number. Saves money if you have already uploaded inscriptions to s3
 s3_upload_start_number: 0
 
 # Make a HEAD request to s3 to check if inscription content exists before making a POST upload
 # Useful if unsure what inscription numbers have been uploaded. HEAD requests are 8% the price of a POST, so can save money.
-s3_head_check: true
+s3_head_check: false
