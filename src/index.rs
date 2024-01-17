@@ -916,7 +916,7 @@ impl Index {
     }
 
     Ok(self.get_transaction(inscription_id.txid)?.and_then(|tx| {
-      ParsedEnvelope::from_transaction(&tx)
+      ParsedEnvelope::from_transaction(&tx, inscription_id.txid.to_string())
         .into_iter()
         .nth(inscription_id.index as usize)
         .map(|envelope| envelope.payload)

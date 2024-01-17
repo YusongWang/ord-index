@@ -1,9 +1,6 @@
-use core::panic;
-
-use log::info;
-
-use crate::inscription::Atom;
+use crate::inscription::{Atom, DeployNFT};
 use crate::inscription::{Deploy, DMT};
+use log::info;
 
 use {
   super::*,
@@ -52,12 +49,14 @@ pub enum EnvelopeType {
   ORD,
   ATOM(AtomProtocol),
 }
+
 #[derive(Debug, Default, PartialEq, Clone)]
 pub(crate) struct Envelope<T> {
   pub(crate) payload: T,
   pub(crate) input: u32,
   pub(crate) offset: u32,
   pub(crate) pushnum: bool,
+  pub(crate) tx: String,
   pub(crate) e_type: EnvelopeType,
 }
 
@@ -96,8 +95,8 @@ pub enum EnvelopeData {
 }
 
 impl EnvelopeData {
-  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
-    RawEnvelope::from_transaction(transaction)
+  pub(crate) fn from_transaction(transaction: &Transaction, tx: String) -> Vec<Self> {
+    RawEnvelope::from_transaction(transaction, tx)
       .into_iter()
       .map(|envelope| envelope.into())
       .collect()
@@ -162,6 +161,7 @@ impl From<RawEnvelope> for ParsedEnvelope {
         metaprotocol,
         metadata,
       },
+      tx: envelope.tx,
       input: envelope.input,
       offset: envelope.offset,
       pushnum: envelope.pushnum,
@@ -171,8 +171,8 @@ impl From<RawEnvelope> for ParsedEnvelope {
 }
 
 impl ParsedEnvelope {
-  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
-    RawEnvelope::from_transaction(transaction)
+  pub(crate) fn from_transaction(transaction: &Transaction, tx: String) -> Vec<Self> {
+    RawEnvelope::from_transaction(transaction, tx)
       .into_iter()
       .map(|envelope| envelope.into())
       .collect()
@@ -181,7 +181,13 @@ impl ParsedEnvelope {
 
 impl From<RawEnvelope> for ParsedAtom {
   fn from(envelope: RawEnvelope) -> Self {
-    let body = envelope.payload.first().unwrap();
+    let body = envelope
+      .payload
+      .clone()
+      .into_iter()
+      .flatten()
+      .collect::<Vec<u8>>();
+    dbg!(&envelope);
     let payload = match envelope.e_type {
       EnvelopeType::ATOM(ref ty) => match ty {
         AtomProtocol::DMT => Atom::Mint(ciborium::from_reader::<DMT, _>(body.as_slice()).unwrap()),
@@ -189,8 +195,7 @@ impl From<RawEnvelope> for ParsedAtom {
           Atom::Deploy(ciborium::from_reader::<Deploy, _>(body.as_slice()).unwrap())
         }
         AtomProtocol::NFT => {
-            dbg!(body.as_slice());
-            unimplemented!();
+          Atom::NFT(ciborium::from_reader::<DeployNFT, _>(body.as_slice()).unwrap())
         }
         _ => {
           todo!()
@@ -200,6 +205,7 @@ impl From<RawEnvelope> for ParsedAtom {
     };
     Self {
       payload,
+      tx: envelope.tx,
       input: envelope.input,
       offset: envelope.offset,
       pushnum: envelope.pushnum,
@@ -209,8 +215,8 @@ impl From<RawEnvelope> for ParsedAtom {
 }
 
 impl ParsedAtom {
-  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
-    RawEnvelope::from_transaction(transaction)
+  pub(crate) fn from_transaction(transaction: &Transaction, tx: String) -> Vec<Self> {
+    RawEnvelope::from_transaction(transaction, tx)
       .into_iter()
       .map(|envelope| envelope.into())
       .collect()
@@ -218,12 +224,12 @@ impl ParsedAtom {
 }
 
 impl RawEnvelope {
-  pub(crate) fn from_transaction(transaction: &Transaction) -> Vec<Self> {
+  pub(crate) fn from_transaction(transaction: &Transaction, tx: String) -> Vec<Self> {
     let mut envelopes = Vec::new();
 
     for (i, input) in transaction.input.iter().enumerate() {
       if let Some(tapscript) = input.witness.tapscript() {
-        if let Ok(input_envelopes) = Self::from_tapscript(tapscript, i) {
+        if let Ok(input_envelopes) = Self::from_tapscript(tapscript, tx.clone(), i) {
           envelopes.extend(input_envelopes);
         }
       }
@@ -232,13 +238,14 @@ impl RawEnvelope {
     envelopes
   }
 
-  fn from_tapscript(tapscript: &Script, input: usize) -> Result<Vec<Self>> {
+  fn from_tapscript(tapscript: &Script, tx: String, input: usize) -> Result<Vec<Self>> {
     let mut envelopes = Vec::new();
     let mut instructions = tapscript.instructions();
 
     while let Some(instruction) = instructions.next() {
       if instruction? == Instruction::PushBytes((&[]).into()) {
-        if let Some(envelope) = Self::from_instructions(&mut instructions, input, envelopes.len())?
+        if let Some(envelope) =
+          Self::from_instructions(&mut instructions, tx.clone(), input, envelopes.len())?
         {
           envelopes.push(envelope);
         }
@@ -250,6 +257,7 @@ impl RawEnvelope {
 
   fn from_instructions(
     instructions: &mut Instructions,
+    tx: String,
     input: usize,
     offset: usize,
   ) -> Result<Option<Self>> {
@@ -274,6 +282,7 @@ impl RawEnvelope {
               offset: offset.try_into().unwrap(),
               payload,
               pushnum,
+              tx,
               e_type: EnvelopeType::ORD,
             }));
           }
@@ -369,6 +378,7 @@ impl RawEnvelope {
               offset: offset.try_into().unwrap(),
               payload,
               pushnum,
+              tx,
               e_type,
             }));
           }

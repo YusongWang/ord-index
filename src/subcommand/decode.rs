@@ -18,7 +18,8 @@ impl Decode {
       Transaction::consensus_decode(&mut io::stdin())?
     };
 
-    let inscriptions = ParsedEnvelope::from_transaction(&transaction);
+    let inscriptions =
+      ParsedEnvelope::from_transaction(&transaction, transaction.txid().to_string());
 
     Ok(Box::new(Output {
       inscriptions: inscriptions

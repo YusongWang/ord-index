@@ -1,6 +1,5 @@
 use super::*;
 use crate::envelope::EnvelopeData;
-use crate::envelope::ParsedAtom;
 use crate::index::fetcher;
 use crate::inscription::Atom;
 use crate::subcommand::server;
@@ -442,31 +441,26 @@ impl Vermilion {
           let mut inscriptions: Vec<Inscription> = Vec::new();
           let mut atoms:Vec<Atom> = Vec::new();
 
-
           for (inscription_id, tx) in id_txs {
             //let atom_tx = ParsedAtom::from_transaction(&tx).into_iter().nth(inscription_id.index as usize).map(|e|e.payload).unwrap();
-            let envelop_data = EnvelopeData::from_transaction(&tx);
-            if let Some(atom) = envelop_data.iter()
-                            .nth(inscription_id.index as usize)
-                            .filter(|item|matches!(item,EnvelopeData::Arc(_)))
-                            .map(|item|match item {
-                                EnvelopeData::Arc(atom)=>atom,
-                                _=> unreachable!(),
-                            })
-                            .map(| envelope| envelope.payload.clone()) {
-                            dbg!(&atom);
-                            atoms.push(atom);
-                        };
-
-
-            let inscription = ParsedEnvelope::from_transaction(&tx)
-              .into_iter()
-              .nth(inscription_id.index as usize)
-              .map(|envelope| envelope.payload)
-              .unwrap();
-            inscriptions.push(inscription);
+            //dbg!(&inscription_id);
+            let envelop_data = EnvelopeData::from_transaction(&tx,inscription_id.txid.to_string());
+            for envelop in envelop_data {
+                match envelop {
+                    EnvelopeData::Arc(atom) => atoms.push(atom.payload),
+                    EnvelopeData::Brc(brc) => inscriptions.push(brc.payload)
+                }
+            }
           }
 
+            if !inscriptions.is_empty() {
+                log::info!("Got Inscription");
+            }
+
+            if !atoms.is_empty() {
+                dbg!(atoms);
+                log::info!("Got Atom protocol")
+            }
           //3. Upload ordinal content to s3 (optional)
           let t4 = Instant::now();
           let cloned_ids = inscription_ids.clone();
@@ -655,6 +649,7 @@ impl Vermilion {
             }
           };
 
+
           if transfers.len() == 0 {
             height += 1;
             continue;
@@ -726,12 +721,12 @@ impl Vermilion {
                 .into_iter()
                 .nth(satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              let address = options
+
+              options
                 .chain()
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
-                .unwrap_or_else(|e| e.to_string());
-              address
+                .unwrap_or_else(|e| e.to_string())
             };
             id_point_address.push((id, satpoint, address));
           }

@@ -113,7 +113,9 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     txid: Txid,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
   ) -> Result {
-    let mut envelopes = ParsedEnvelope::from_transaction(tx).into_iter().peekable();
+    let mut envelopes = ParsedEnvelope::from_transaction(tx, txid.to_string())
+      .into_iter()
+      .peekable();
     let mut floating_inscriptions = Vec::new();
     let mut inscribed_offsets = BTreeMap::new();
     let mut total_input_value = 0;
